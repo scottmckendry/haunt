@@ -19,6 +19,7 @@ use libghostty_vt::{key, terminal::Mode};
 use crate::{
     base64,
     config::{AppSize, Config},
+    graphics::Graphics,
     input, osc,
     paint::Area,
     pane::{Pane, PaneDims, SelectKind},
@@ -56,6 +57,7 @@ struct ClickState {
 pub struct App {
     cfg: Config,
     theme: Option<Theme>,
+    graphics: Graphics,
     main: Pane,
     aux: Vec<Option<Pane>>,
     visible: Option<usize>,
@@ -82,6 +84,8 @@ pub struct App {
 
 impl App {
     pub fn new(cfg: Config, size: Size, theme: Option<Theme>, tx: SyncSender<Msg>) -> Result<Self> {
+        // Install the PNG decoder before the first pane can receive graphics.
+        let graphics = Graphics::new()?;
         let (main, reader) =
             Pane::spawn(0, &cfg.shell, None, dims_of(size, full_area(size)), theme)?;
         spawn_reader(0, reader, tx.clone());
@@ -90,6 +94,7 @@ impl App {
         Ok(Self {
             cfg,
             theme,
+            graphics,
             main,
             aux,
             visible: None,
@@ -187,12 +192,34 @@ impl App {
         let mut frame = Vec::with_capacity(32 * 1024);
         frame.extend_from_slice(b"\x1b[?2026h");
 
+        let visible: Vec<u64> = match (self.visible, full_aux) {
+            (Some(v), true) => match self.aux[v].as_ref() {
+                Some(pane) => vec![pane.id],
+                None => vec![self.main.id],
+            },
+            (Some(v), false) => {
+                let mut ids = vec![self.main.id];
+                if let Some(pane) = self.aux[v].as_ref() {
+                    ids.push(pane.id);
+                }
+                ids
+            }
+            (None, _) => vec![self.main.id],
+        };
+        self.graphics.begin_frame(&visible, &mut frame);
+
         match (self.visible, self.focus, full_aux) {
             (Some(v), _, true) => {
                 if let Some(pane) = self.aux[v].as_mut() {
-                    pane.paint(&mut frame, aux_area.expect("full aux has an area"), true)?;
+                    pane.paint(
+                        &mut frame,
+                        aux_area.expect("full aux has an area"),
+                        true,
+                        &mut self.graphics,
+                    )?;
                 } else {
-                    self.main.paint(&mut frame, main_area, true)?;
+                    self.main
+                        .paint(&mut frame, main_area, true, &mut self.graphics)?;
                 }
             }
             (Some(v), Focus::Main, false) => {
@@ -201,17 +228,27 @@ impl App {
                         &mut frame,
                         aux_area.expect("visible aux has an area"),
                         false,
+                        &mut self.graphics,
                     )?;
                 }
-                self.main.paint(&mut frame, main_area, true)?;
+                self.main
+                    .paint(&mut frame, main_area, true, &mut self.graphics)?;
             }
             (Some(v), Focus::Aux, false) => {
-                self.main.paint(&mut frame, main_area, false)?;
+                self.main
+                    .paint(&mut frame, main_area, false, &mut self.graphics)?;
                 if let Some(pane) = self.aux[v].as_mut() {
-                    pane.paint(&mut frame, aux_area.expect("visible aux has an area"), true)?;
+                    pane.paint(
+                        &mut frame,
+                        aux_area.expect("visible aux has an area"),
+                        true,
+                        &mut self.graphics,
+                    )?;
                 }
             }
-            (None, _, _) => self.main.paint(&mut frame, main_area, true)?,
+            (None, _, _) => self
+                .main
+                .paint(&mut frame, main_area, true, &mut self.graphics)?,
         }
 
         if let Some(error) = &self.error {
@@ -306,11 +343,14 @@ impl App {
             let _ = pane.wait();
         }
 
+        self.graphics.remove_pane(id);
         if self.visible == Some(idx) {
             self.visible = None;
             self.focus = Focus::Main;
             self.focus_changed(old_id)?;
             self.relayout()?;
+        } else {
+            self.frame_dirty = true;
         }
         Ok(())
     }

@@ -14,6 +14,12 @@ use libghostty_vt::{
     unicode,
 };
 
+use crate::graphics::Graphics;
+
+/// Kitty's Unicode placeholder base character. The image ID is carried in the
+/// cell's foreground colour; row/column/ID-high values are combining diacritics.
+const PLACEHOLDER: u32 = 0x10EEEE;
+
 /// A pane's destination rectangle in outer-terminal cells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Area {
@@ -37,6 +43,8 @@ pub struct PaintState {
 pub fn draw<'a>(
     snapshot: &Snapshot<'a, '_>,
     term: &Terminal<'_, '_>,
+    graphics: &Graphics,
+    pane_id: u64,
     row_it: &mut RowIterator<'a>,
     cell_it: &mut CellIterator<'a>,
     state: &PaintState,
@@ -76,17 +84,21 @@ pub fn draw<'a>(
             } else {
                 Style::default()
             };
-            let sgr = sgr_for(
-                state,
-                &style,
-                cell.fg_color()?,
-                cell.bg_color()?,
-                cell.is_selected()?,
-            );
 
-            // OSC 8 hyperlinks are not part of the render state, so resolve
-            // them through the terminal only for cells that carry one.
+            // OSC 8 hyperlinks and placeholder IDs are not part of the
+            // render state, so resolve them through the raw cell.
             let raw = cell.raw_cell()?;
+            let placeholder = raw.codepoint()? == PLACEHOLDER;
+            let fg = if placeholder {
+                match placeholder_outer_id(graphics, pane_id, &style) {
+                    Some(id) => Some(image_id_color(id)),
+                    None => cell.fg_color()?,
+                }
+            } else {
+                cell.fg_color()?
+            };
+            let sgr = sgr_for(state, &style, fg, cell.bg_color()?, cell.is_selected()?);
+
             let uri = if raw.has_hyperlink()? {
                 hyperlink_uri(term, x, y as u32)?
             } else {
@@ -99,6 +111,13 @@ pub fn draw<'a>(
 
             let mut text = String::new();
             cell.graphemes_utf8(&mut text)?;
+            if placeholder {
+                // The third diacritic carries the high 8 bits of the inner
+                // image ID. Forwarded IDs stay below 2^24, so drop it.
+                if let Some((idx, _)) = text.char_indices().nth(3) {
+                    text.truncate(idx);
+                }
+            }
             if text.is_empty() || text.chars().all(|c| c == '\0') {
                 text.clear();
                 text.push(' ');
@@ -161,6 +180,26 @@ fn set_hyperlink(out: &mut Vec<u8>, uri: Option<&str>) {
         out.extend_from_slice(uri.as_bytes());
     }
     out.extend_from_slice(b"\x1b\\");
+}
+
+/// Resolve a placeholder cell's inner image ID from its style, then translate
+/// it to the ID used by the forwarded image data.
+fn placeholder_outer_id(graphics: &Graphics, pane_id: u64, style: &Style) -> Option<u32> {
+    let inner_low = match style.fg_color {
+        StyleColor::Rgb(c) => u32::from(c.r) << 16 | u32::from(c.g) << 8 | u32::from(c.b),
+        StyleColor::Palette(index) => u32::from(index.0),
+        StyleColor::None => return None,
+    };
+    graphics.outer_image_id(pane_id, inner_low)
+}
+
+/// Encode an image ID as the RGB foreground colour a placeholder cell expects.
+fn image_id_color(id: u32) -> RgbColor {
+    RgbColor {
+        r: (id >> 16) as u8,
+        g: (id >> 8) as u8,
+        b: id as u8,
+    }
 }
 
 /// Emit the outer cursor for the focused pane.
@@ -372,7 +411,19 @@ mod tests {
         out: &mut Vec<u8>,
     ) -> Result<()> {
         let snapshot = render_state.update(term)?;
-        draw(&snapshot, term, rows, cells, state, out, area(20, 4), false)
+        let graphics = Graphics::new()?;
+        draw(
+            &snapshot,
+            term,
+            &graphics,
+            0,
+            rows,
+            cells,
+            state,
+            out,
+            area(20, 4),
+            false,
+        )
     }
 
     fn select(term: &Terminal<'static, 'static>, start: u16, end: u16) {
@@ -563,5 +614,64 @@ mod tests {
 
         let text = String::from_utf8_lossy(&out);
         assert!(text.contains("\x1b[0;7;"), "inverse missing: {text:?}");
+    }
+
+    #[test]
+    fn placeholder_cells_use_forwarded_image_id_and_drop_high_diacritic() {
+        let mut term: Terminal<'static, 'static> = Terminal::new(TerminalOptions {
+            cols: 10,
+            rows: 3,
+            max_scrollback: 0,
+        })
+        .unwrap();
+        term.resize(10, 3, 8, 16).unwrap();
+        term.set_kitty_image_storage_limit(1024 * 1024).unwrap();
+        term.vt_write(
+            b"\x1b_Ga=t,f=24,s=1,v=1,i=7;/wAA\x1b\\\
+              \x1b_Ga=p,U=1,i=7,p=3,c=1,r=1\x1b\\",
+        );
+        // Inner image ID 7 (RGB 0,0,7), placement ID 3 (underline), and a
+        // placeholder cluster carrying row, column, and high-ID diacritics.
+        term.vt_write(
+            "\x1b[38;2;0;0;7m\x1b[58;2;0;0;3m\x1b[1;1H\u{10EEEE}\u{305}\u{305}\u{30D}".as_bytes(),
+        );
+
+        let mut graphics = Graphics::new().unwrap();
+        let mut out = Vec::new();
+        let area = Area {
+            x: 0,
+            y: 0,
+            w: 10,
+            h: 3,
+        };
+        graphics.draw_pane(1, &term, &mut out, area).unwrap();
+        assert_eq!(graphics.outer_image_id(1, 7), Some(1));
+
+        let mut render_state = RenderState::new().unwrap();
+        let snapshot = render_state.update(&term).unwrap();
+        let mut rows = RowIterator::new().unwrap();
+        let mut cells = CellIterator::new().unwrap();
+        out.clear();
+        draw(
+            &snapshot,
+            &term,
+            &graphics,
+            1,
+            &mut rows,
+            &mut cells,
+            &PaintState::default(),
+            &mut out,
+            area,
+            true,
+        )
+        .unwrap();
+
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.contains("38;2;0;0;1"), "{text:?}");
+        assert!(text.contains("\u{10EEEE}\u{305}\u{305}"), "{text:?}");
+        assert!(
+            !text.contains("\u{30D}"),
+            "high ID diacritic should be dropped: {text:?}"
+        );
     }
 }
