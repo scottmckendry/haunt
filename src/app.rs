@@ -18,7 +18,7 @@ use libghostty_vt::{key, terminal::Mode};
 use crate::{
     base64,
     config::{AppSize, Config},
-    input,
+    input, osc,
     paint::Area,
     pane::{Pane, PaneDims, SelectKind},
     theme::Theme,
@@ -74,6 +74,7 @@ pub struct App {
     last_autoscroll: Instant,
     pending_writes: Vec<u8>,
     last_title: Option<String>,
+    last_progress: Option<osc::Progress>,
 }
 
 impl App {
@@ -105,6 +106,7 @@ impl App {
             last_autoscroll: Instant::now(),
             pending_writes: Vec::new(),
             last_title: None,
+            last_progress: None,
         })
     }
 
@@ -117,13 +119,17 @@ impl App {
     }
 
     pub fn handle(&mut self, msg: Msg) -> Result<()> {
+        let mut progress_changed = false;
         match msg {
             Msg::Output(id, bytes) => {
                 let focused = self.is_focused(id);
                 let outer_focus = self.outer_focus;
                 let painted = self.is_painted(id);
+                let mut effects = Vec::new();
                 if let Some(pane) = self.pane_mut(id) {
                     pane.feed(&bytes)?;
+                    progress_changed = pane.take_progress_changed();
+                    effects = pane.take_effects();
                     if pane.take_focus_events_pending() && focused && outer_focus {
                         pane.send(b"\x1b[I")?;
                     }
@@ -131,6 +137,7 @@ impl App {
                         self.frame_dirty = true;
                     }
                 }
+                self.pending_writes.extend_from_slice(&effects);
             }
             Msg::PaneEof(id) => self.on_eof(id)?,
             Msg::Input(Event::Key(ev)) => self.on_key(ev)?,
@@ -147,6 +154,7 @@ impl App {
                 self.running = false;
             }
         }
+        self.sync_progress(progress_changed)?;
         self.sync_title();
         Ok(())
     }
@@ -638,6 +646,44 @@ impl App {
                 .is_some_and(|pane| pane.dirty)
     }
 
+    fn aggregate_progress(&self) -> Option<osc::Progress> {
+        aggregate_progress(
+            std::iter::once(self.main.progress())
+                .chain(self.aux.iter().flatten().map(Pane::progress))
+                .flatten(),
+        )
+    }
+
+    /// Forward the most significant progress among all panes, including hidden
+    /// ones. `force` re-sends an unchanged aggregate for keepalive reports.
+    fn sync_progress(&mut self, force: bool) -> Result<()> {
+        let next = self.aggregate_progress();
+        if !force && next == self.last_progress {
+            return Ok(());
+        }
+        let previous = self.last_progress;
+        self.last_progress = next;
+
+        match next {
+            None => {
+                if previous.is_some() {
+                    self.pending_writes.extend_from_slice(b"\x1b]9;4;0\x07");
+                }
+            }
+            Some(progress) => {
+                self.pending_writes.extend_from_slice(b"\x1b]9;4;");
+                self.pending_writes.push(b'0' + progress.state.code());
+                if let Some(percent) = progress.percent {
+                    self.pending_writes.push(b';');
+                    self.pending_writes
+                        .extend_from_slice(percent.to_string().as_bytes());
+                }
+                self.pending_writes.push(0x07);
+            }
+        }
+        Ok(())
+    }
+
     /// Forward the focused pane's title to the outer terminal.
     ///
     /// An unset or cleared pane title emits an empty OSC 2 so a previous
@@ -773,6 +819,28 @@ fn dims_of(size: Size, area: Area) -> PaneDims {
         cell_w: size.cell_w,
         cell_h: size.cell_h,
     }
+}
+
+/// Pick the most significant progress across panes; ties use the higher
+/// percentage.
+fn aggregate_progress(progress: impl Iterator<Item = osc::Progress>) -> Option<osc::Progress> {
+    let mut best: Option<osc::Progress> = None;
+    for progress in progress {
+        let better = match best {
+            None => true,
+            Some(current) => {
+                let rank = progress.state.priority();
+                let current_rank = current.state.priority();
+                rank > current_rank
+                    || (rank == current_rank
+                        && progress.percent.unwrap_or(0) > current.percent.unwrap_or(0))
+            }
+        };
+        if better {
+            best = Some(progress);
+        }
+    }
+    best
 }
 
 fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
@@ -925,5 +993,37 @@ mod tests {
         let (main, aux) = layout(size(81, 24), Some(AppSize::Half));
         assert_eq!(main.w, 40);
         assert_eq!(aux.unwrap().w, 41);
+    }
+
+    #[test]
+    fn progress_aggregation_prefers_significance_then_percent() {
+        use osc::{Progress, ProgressState};
+
+        let set = |percent| Progress {
+            state: ProgressState::Set,
+            percent,
+        };
+        let indeterminate = Progress {
+            state: ProgressState::Indeterminate,
+            percent: Some(90),
+        };
+        let error = Progress {
+            state: ProgressState::Error,
+            percent: None,
+        };
+
+        assert_eq!(aggregate_progress(std::iter::empty()), None);
+        assert_eq!(
+            aggregate_progress([set(Some(10)), set(Some(75)), set(Some(50))].into_iter()),
+            Some(set(Some(75)))
+        );
+        assert_eq!(
+            aggregate_progress([set(Some(99)), indeterminate, error].into_iter()),
+            Some(error)
+        );
+        assert_eq!(
+            aggregate_progress([set(Some(99)), indeterminate].into_iter()),
+            Some(indeterminate)
+        );
     }
 }

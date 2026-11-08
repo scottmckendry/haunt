@@ -15,15 +15,16 @@ use libghostty_vt::{
     screen::TrackedGridRef,
     selection::{FormatOptions, SelectLineOptions, SelectWordBetweenOptions, Selection},
     terminal::{
-        ConformanceLevel, DeviceAttributeFeature, DeviceAttributes, DeviceType, Mode, Point,
-        PointCoordinate, PrimaryDeviceAttributes, ScrollViewport, SecondaryDeviceAttributes,
-        SizeReportSize,
+        ClipboardLocation, ClipboardWrite, ConformanceLevel, DeviceAttributeFeature,
+        DeviceAttributes, DeviceType, Mode, Point, PointCoordinate, PrimaryDeviceAttributes,
+        ScrollViewport, SecondaryDeviceAttributes, SizeReportSize,
     },
 };
 use portable_pty::{Child, MasterPty, PtySize};
 
 use crate::{
-    input,
+    base64, input,
+    osc::{self, Event, ProgressUpdate},
     paint::{self, Area, PaintState},
     pty,
     theme::Theme,
@@ -112,8 +113,12 @@ pub struct Pane {
     cells_it: CellIterator<'static>,
     paint_state: PaintState,
     responses: Arc<Mutex<Vec<u8>>>,
+    effects: Arc<Mutex<Vec<u8>>>,
     title: Arc<Mutex<Option<String>>>,
     dims: Arc<Mutex<PaneDims>>,
+    osc: osc::Scanner,
+    progress: Option<osc::Progress>,
+    progress_changed: bool,
     mouse_encoder: mouse::Encoder<'static>,
     mouse_event: mouse::Event<'static>,
     mouse_down: bool,
@@ -154,6 +159,7 @@ impl Pane {
 
         let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(writer));
         let responses = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let effects = Arc::new(Mutex::new(Vec::<u8>::new()));
         let title = Arc::new(Mutex::new(None::<String>));
         let dims_shared = Arc::new(Mutex::new(dims));
 
@@ -171,6 +177,17 @@ impl Pane {
             let responses = Arc::clone(&responses);
             term.on_pty_write(move |_term, data| {
                 responses.lock().unwrap().extend_from_slice(data);
+            })?;
+        }
+        {
+            let effects = Arc::clone(&effects);
+            term.on_bell(move |_term| effects.lock().unwrap().push(0x07))?;
+        }
+        {
+            let effects = Arc::clone(&effects);
+            term.on_clipboard_write(move |_term, write| {
+                forward_clipboard(&effects, &write);
+                Ok(())
             })?;
         }
         {
@@ -233,8 +250,12 @@ impl Pane {
                 cells_it: CellIterator::new()?,
                 paint_state,
                 responses,
+                effects,
                 title,
                 dims: dims_shared,
+                osc: osc::Scanner::default(),
+                progress: None,
+                progress_changed: false,
                 mouse_encoder: mouse::Encoder::new()?,
                 mouse_event: mouse::Event::new()?,
                 mouse_down: false,
@@ -251,6 +272,22 @@ impl Pane {
 
     /// Feed bytes read from the PTY into the terminal and answer any queries.
     pub fn feed(&mut self, bytes: &[u8]) -> Result<()> {
+        for event in self.osc.feed(bytes) {
+            match event {
+                Event::Progress(ProgressUpdate::Set(progress)) => {
+                    self.progress = Some(progress);
+                    self.progress_changed = true;
+                }
+                Event::Progress(ProgressUpdate::Remove) => {
+                    self.progress = None;
+                    self.progress_changed = true;
+                }
+                Event::Notification(sequence) => {
+                    self.effects.lock().unwrap().extend_from_slice(&sequence);
+                }
+            }
+        }
+
         self.term.vt_write(bytes);
         self.dirty = true;
         self.flush_responses()?;
@@ -288,6 +325,24 @@ impl Pane {
         self.title.lock().unwrap().clone()
     }
 
+    /// Take effects (bell, notifications) generated since the last call.
+    pub fn take_effects(&mut self) -> Vec<u8> {
+        std::mem::take(&mut *self.effects.lock().unwrap())
+    }
+
+    /// Current OSC 9;4 progress reported by the child, if any.
+    pub fn progress(&self) -> Option<osc::Progress> {
+        self.progress
+    }
+
+    /// Whether the child reported progress since the last call.
+    ///
+    /// Keepalives matter: Ghostty expires progress that is not refreshed, and
+    /// apps may re-send the same indeterminate report every second.
+    pub fn take_progress_changed(&mut self) -> bool {
+        std::mem::take(&mut self.progress_changed)
+    }
+
     pub fn resize(&mut self, dims: PaneDims) -> Result<()> {
         if *self.dims.lock().unwrap() == dims {
             return Ok(());
@@ -310,6 +365,7 @@ impl Pane {
         let snapshot = self.render_state.update(&self.term)?;
         paint::draw(
             &snapshot,
+            &self.term,
             &mut self.rows_it,
             &mut self.cells_it,
             &self.paint_state,
@@ -612,6 +668,33 @@ impl Pane {
     }
 }
 
+fn forward_clipboard(effects: &Arc<Mutex<Vec<u8>>>, write: &ClipboardWrite<'_>) {
+    let selector = match write.location() {
+        ClipboardLocation::Standard => b'c',
+        ClipboardLocation::Selection => b's',
+        ClipboardLocation::Primary => b'p',
+    };
+
+    // Prefer a plain-text representation; fall back to the first one.
+    let mut chosen = None;
+    for content in write.contents() {
+        if content.mime == "text/plain" {
+            chosen = Some(content);
+            break;
+        }
+        chosen.get_or_insert(content);
+    }
+
+    let mut out = effects.lock().unwrap();
+    out.extend_from_slice(b"\x1b]52;");
+    out.push(selector);
+    out.push(b';');
+    if let Some(content) = chosen {
+        base64::encode_into(content.data.as_bytes(), &mut out);
+    }
+    out.push(0x07);
+}
+
 fn mouse_button(button: MouseButton) -> mouse::Button {
     match button {
         MouseButton::Left => mouse::Button::Left,
@@ -687,6 +770,103 @@ mod tests {
             pane.selection_finish().unwrap().as_deref(),
             Some(&b"hello world"[..])
         );
+
+        pane.shutdown();
+    }
+
+    #[test]
+    fn clipboard_writes_are_forwarded() {
+        let (mut pane, _reader) = Pane::spawn(
+            9,
+            &["/bin/sh".to_string()],
+            None,
+            PaneDims {
+                cols: 20,
+                rows: 5,
+                cell_w: 8,
+                cell_h: 16,
+            },
+            None,
+        )
+        .unwrap();
+
+        pane.feed(b"\x1b]52;c;Zm9v\x07").unwrap();
+        assert_eq!(pane.take_effects(), b"\x1b]52;c;Zm9v\x07");
+
+        pane.feed(b"\x1b]52;s;YmFy\x07").unwrap();
+        assert_eq!(pane.take_effects(), b"\x1b]52;s;YmFy\x07");
+
+        // An empty payload clears the destination.
+        pane.feed(b"\x1b]52;p;\x07").unwrap();
+        assert_eq!(pane.take_effects(), b"\x1b]52;p;\x07");
+
+        pane.shutdown();
+    }
+
+    #[test]
+    fn bell_and_notifications_become_outer_effects() {
+        let (mut pane, _reader) = Pane::spawn(
+            7,
+            &["/bin/sh".to_string()],
+            None,
+            PaneDims {
+                cols: 20,
+                rows: 5,
+                cell_w: 8,
+                cell_h: 16,
+            },
+            None,
+        )
+        .unwrap();
+
+        pane.feed(b"\x07").unwrap();
+        assert_eq!(pane.take_effects(), b"\x07");
+        assert!(pane.take_effects().is_empty());
+
+        pane.feed(b"\x1b]9;build done\x07").unwrap();
+        assert_eq!(pane.take_effects(), b"\x1b]9;build done\x07");
+
+        pane.feed(b"\x1b]777;notify;title;body\x1b\\").unwrap();
+        assert_eq!(pane.take_effects(), b"\x1b]777;notify;title;body\x1b\\");
+
+        pane.shutdown();
+    }
+
+    #[test]
+    fn progress_is_tracked_and_reports_keepalives() {
+        let (mut pane, _reader) = Pane::spawn(
+            8,
+            &["/bin/sh".to_string()],
+            None,
+            PaneDims {
+                cols: 20,
+                rows: 5,
+                cell_w: 8,
+                cell_h: 16,
+            },
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(pane.progress(), None);
+        assert!(!pane.take_progress_changed());
+
+        pane.feed(b"\x1b]9;4;1;40\x07").unwrap();
+        assert_eq!(
+            pane.progress(),
+            Some(osc::Progress {
+                state: osc::ProgressState::Set,
+                percent: Some(40),
+            })
+        );
+        assert!(pane.take_progress_changed());
+
+        pane.feed(b"\x1b]9;4;1;40\x07").unwrap();
+        assert!(pane.take_progress_changed());
+
+        pane.feed(b"\x1b]9;4;0\x07").unwrap();
+        assert_eq!(pane.progress(), None);
+        assert!(pane.take_progress_changed());
 
         pane.shutdown();
     }

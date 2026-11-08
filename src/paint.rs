@@ -7,8 +7,10 @@
 
 use anyhow::Result;
 use libghostty_vt::{
+    Error, Terminal,
     render::{CellIterator, CursorVisualStyle, RowIterator, Snapshot},
     style::{RgbColor, Style, StyleColor, Underline},
+    terminal::{Point, PointCoordinate},
     unicode,
 };
 
@@ -28,8 +30,13 @@ pub struct PaintState {
     pub selection_bg: Option<RgbColor>,
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "render handles are passed separately to keep their borrows disjoint"
+)]
 pub fn draw<'a>(
     snapshot: &Snapshot<'a, '_>,
+    term: &Terminal<'_, '_>,
     row_it: &mut RowIterator<'a>,
     cell_it: &mut CellIterator<'a>,
     state: &PaintState,
@@ -43,6 +50,7 @@ pub fn draw<'a>(
 
     let mut row_iter = row_it.update(snapshot)?;
     let mut last_sgr: Option<Sgr> = None;
+    let mut last_uri: Option<String> = None;
     let mut y = 0u16;
 
     while let Some(row) = row_iter.next() {
@@ -75,6 +83,19 @@ pub fn draw<'a>(
                 cell.bg_color()?,
                 cell.is_selected()?,
             );
+
+            // OSC 8 hyperlinks are not part of the render state, so resolve
+            // them through the terminal only for cells that carry one.
+            let raw = cell.raw_cell()?;
+            let uri = if raw.has_hyperlink()? {
+                hyperlink_uri(term, x, y as u32)?
+            } else {
+                None
+            };
+            if uri != last_uri {
+                set_hyperlink(out, uri.as_deref());
+                last_uri = uri;
+            }
 
             let mut text = String::new();
             cell.graphemes_utf8(&mut text)?;
@@ -110,7 +131,36 @@ pub fn draw<'a>(
         y += 1;
     }
 
+    if last_uri.is_some() {
+        set_hyperlink(out, None);
+    }
+
     Ok(())
+}
+
+fn hyperlink_uri(term: &Terminal<'_, '_>, x: u16, y: u32) -> Result<Option<String>> {
+    let grid = term.grid_ref(Point::Viewport(PointCoordinate { x, y }))?;
+    let mut buf = [0u8; 512];
+    let bytes = match grid.hyperlink_uri(&mut buf) {
+        Ok(0) => return Ok(None),
+        Ok(n) => buf[..n].to_vec(),
+        Err(Error::OutOfSpace { required }) => {
+            let mut big = vec![0u8; required];
+            let n = grid.hyperlink_uri(&mut big)?;
+            big.truncate(n);
+            big
+        }
+        Err(err) => return Err(err.into()),
+    };
+    Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+}
+
+fn set_hyperlink(out: &mut Vec<u8>, uri: Option<&str>) {
+    out.extend_from_slice(b"\x1b]8;;");
+    if let Some(uri) = uri {
+        out.extend_from_slice(uri.as_bytes());
+    }
+    out.extend_from_slice(b"\x1b\\");
 }
 
 /// Emit the outer cursor for the focused pane.
@@ -322,7 +372,7 @@ mod tests {
         out: &mut Vec<u8>,
     ) -> Result<()> {
         let snapshot = render_state.update(term)?;
-        draw(&snapshot, rows, cells, state, out, area(20, 4), false)
+        draw(&snapshot, term, rows, cells, state, out, area(20, 4), false)
     }
 
     fn select(term: &Terminal<'static, 'static>, start: u16, end: u16) {
@@ -460,6 +510,35 @@ mod tests {
         assert!(
             text.contains("48;2;60;64;72"),
             "selection background missing: {text:?}"
+        );
+    }
+
+    #[test]
+    fn hyperlinks_are_opened_for_runs_and_closed() {
+        let term = term_with(b"\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\ plain");
+        let mut render_state = RenderState::new().unwrap();
+        let mut rows = RowIterator::new().unwrap();
+        let mut cells = CellIterator::new().unwrap();
+        let mut out = Vec::new();
+        draw_term(
+            &term,
+            &mut render_state,
+            &mut rows,
+            &mut cells,
+            &PaintState::default(),
+            &mut out,
+        )
+        .unwrap();
+
+        let text = String::from_utf8_lossy(&out);
+        let open = "\x1b]8;;https://example.com\x1b\\";
+        let close = "\x1b]8;;\x1b\\";
+        assert!(text.contains(open), "hyperlink was not opened: {text:?}");
+        assert!(text.contains(close), "hyperlink was not closed: {text:?}");
+        assert_eq!(
+            text.matches(open).count(),
+            1,
+            "link reopened per cell: {text:?}"
         );
     }
 

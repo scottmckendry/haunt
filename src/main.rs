@@ -8,6 +8,7 @@ mod app;
 mod base64;
 mod config;
 mod input;
+mod osc;
 mod paint;
 mod pane;
 mod pty;
