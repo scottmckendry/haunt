@@ -12,7 +12,7 @@ use libghostty_vt::{
     RenderState, Terminal, TerminalOptions,
     render::{CellIterator, RowIterator},
     terminal::{
-        ConformanceLevel, DeviceAttributeFeature, DeviceAttributes, DeviceType,
+        ConformanceLevel, DeviceAttributeFeature, DeviceAttributes, DeviceType, Mode,
         PrimaryDeviceAttributes, SecondaryDeviceAttributes, SizeReportSize,
     },
 };
@@ -93,6 +93,8 @@ pub struct Pane {
     dims: Arc<Mutex<PaneDims>>,
     exited: bool,
     force_full: bool,
+    focus_events: bool,
+    focus_events_pending: bool,
     pub dirty: bool,
 }
 
@@ -186,6 +188,8 @@ impl Pane {
                 dims: dims_shared,
                 exited: false,
                 force_full: true,
+                focus_events: false,
+                focus_events_pending: false,
                 dirty: true,
             },
             reader,
@@ -196,7 +200,26 @@ impl Pane {
     pub fn feed(&mut self, bytes: &[u8]) -> Result<()> {
         self.term.vt_write(bytes);
         self.dirty = true;
-        self.flush_responses()
+        self.flush_responses()?;
+
+        // A pane that enables focus reporting after it was already focused
+        // misses the transition. Flag it so App can synthesize a focus-in.
+        let focus_events = self.mode(Mode::FOCUS_EVENT);
+        if focus_events && !self.focus_events {
+            self.focus_events_pending = true;
+        }
+        self.focus_events = focus_events;
+        Ok(())
+    }
+
+    /// Whether the pane just enabled focus reporting; clears the flag.
+    pub fn take_focus_events_pending(&mut self) -> bool {
+        std::mem::take(&mut self.focus_events_pending)
+    }
+
+    /// Whether a terminal mode is enabled by the inner program.
+    pub fn mode(&self, mode: Mode) -> bool {
+        self.term.mode(mode).unwrap_or(false)
     }
 
     pub fn send(&mut self, bytes: &[u8]) -> Result<()> {
@@ -289,5 +312,38 @@ impl Pane {
 impl Drop for Pane {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enabling_focus_events_is_signalled_once() {
+        let (mut pane, _reader) = Pane::spawn(
+            1,
+            &["/bin/sh".to_string()],
+            None,
+            PaneDims {
+                cols: 20,
+                rows: 5,
+                cell_w: 8,
+                cell_h: 16,
+            },
+        )
+        .unwrap();
+
+        assert!(!pane.take_focus_events_pending());
+
+        pane.feed(b"\x1b[?1004h").unwrap();
+        assert!(pane.take_focus_events_pending());
+        assert!(!pane.take_focus_events_pending());
+
+        pane.feed(b"\x1b[?1004l").unwrap();
+        pane.feed(b"\x1b[?1004h").unwrap();
+        assert!(pane.take_focus_events_pending());
+
+        pane.shutdown();
     }
 }

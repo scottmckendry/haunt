@@ -46,8 +46,18 @@ fn run() -> Result<i32> {
     execute!(
         stdout,
         EnterAlternateScreen,
+        event::EnableBracketedPaste,
+        event::EnableFocusChange,
         cursor::Hide,
         style::ResetColor
+    )?;
+    execute!(
+        stdout,
+        event::PushKeyboardEnhancementFlags(
+            event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                | event::KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+        )
     )?;
 
     let (tx, rx) = app::channel();
@@ -109,7 +119,15 @@ impl Drop for Guard {
         // Leave synchronized-output mode and restore the default cursor shape
         // even if a frame was interrupted.
         let _ = out.write_all(b"\x1b[?2026l\x1b[0 q");
-        let _ = execute!(out, cursor::Show, style::ResetColor, LeaveAlternateScreen);
+        let _ = execute!(
+            out,
+            event::PopKeyboardEnhancementFlags,
+            event::DisableFocusChange,
+            event::DisableBracketedPaste,
+            cursor::Show,
+            style::ResetColor,
+            LeaveAlternateScreen
+        );
         let _ = terminal::disable_raw_mode();
     }
 }

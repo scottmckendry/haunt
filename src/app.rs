@@ -13,7 +13,7 @@ use crossterm::{
     event::{Event, KeyEvent},
     terminal,
 };
-use libghostty_vt::key;
+use libghostty_vt::{key, terminal::Mode};
 
 use crate::{
     config::{AppSize, Config},
@@ -58,6 +58,7 @@ pub struct App {
     running: bool,
     exit_code: i32,
     error: Option<String>,
+    outer_focus: bool,
 }
 
 impl App {
@@ -81,6 +82,7 @@ impl App {
             running: true,
             exit_code: 0,
             error: None,
+            outer_focus: true,
         })
     }
 
@@ -95,15 +97,24 @@ impl App {
     pub fn handle(&mut self, msg: Msg) -> Result<()> {
         match msg {
             Msg::Output(id, bytes) => {
+                let focused = self.is_focused(id);
+                let outer_focus = self.outer_focus;
+                let painted = self.is_painted(id);
                 if let Some(pane) = self.pane_mut(id) {
                     pane.feed(&bytes)?;
-                    if self.is_painted(id) {
+                    if pane.take_focus_events_pending() && focused && outer_focus {
+                        pane.send(b"\x1b[I")?;
+                    }
+                    if painted {
                         self.frame_dirty = true;
                     }
                 }
             }
             Msg::PaneEof(id) => self.on_eof(id)?,
             Msg::Input(Event::Key(ev)) => self.on_key(ev)?,
+            Msg::Input(Event::Paste(text)) => self.on_paste(text)?,
+            Msg::Input(Event::FocusGained) => self.on_outer_focus(true)?,
+            Msg::Input(Event::FocusLost) => self.on_outer_focus(false)?,
             Msg::Input(Event::Resize(_, _)) => {
                 let size = query_size()?;
                 self.resize(size)?;
@@ -239,6 +250,7 @@ impl App {
             return Ok(());
         };
 
+        let old_id = self.focused_id();
         if let Some(mut pane) = self.aux[idx].take() {
             let _ = pane.wait();
         }
@@ -246,6 +258,7 @@ impl App {
         if self.visible == Some(idx) {
             self.visible = None;
             self.focus = Focus::Main;
+            self.focus_changed(old_id)?;
             self.relayout()?;
         }
         Ok(())
@@ -268,8 +281,10 @@ impl App {
 
     fn toggle(&mut self, idx: usize) -> Result<()> {
         if self.visible == Some(idx) {
+            let old_id = self.focused_id();
             self.visible = None;
             self.focus = Focus::Main;
+            self.focus_changed(old_id)?;
             self.relayout()
         } else {
             self.show(idx)
@@ -277,6 +292,7 @@ impl App {
     }
 
     fn show(&mut self, idx: usize) -> Result<()> {
+        let old_id = self.focused_id();
         if self.aux[idx].is_none() {
             let dims = dims_of(self.size, hidden_area(self.size, self.cfg.apps[idx].size));
             let cmd = self.cfg.apps[idx].cmd.clone();
@@ -302,7 +318,64 @@ impl App {
         self.visible = Some(idx);
         self.focus = Focus::Aux;
         self.error = None;
+        self.focus_changed(old_id)?;
         self.relayout()
+    }
+
+    fn focused_id(&self) -> u64 {
+        if self.focus == Focus::Aux
+            && let Some(pane) = self.visible.and_then(|idx| self.aux[idx].as_ref())
+        {
+            return pane.id;
+        }
+        self.main.id
+    }
+
+    fn is_focused(&self, id: u64) -> bool {
+        self.focused_id() == id
+    }
+
+    fn focused(&self) -> &Pane {
+        if self.focus == Focus::Aux
+            && let Some(pane) = self.visible.and_then(|idx| self.aux[idx].as_ref())
+        {
+            return pane;
+        }
+        &self.main
+    }
+
+    fn focus_changed(&mut self, old_id: u64) -> Result<()> {
+        self.frame_dirty = true;
+        let new_id = self.focused_id();
+        if old_id != new_id && self.outer_focus {
+            self.send_focus_event(old_id, false)?;
+            self.send_focus_event(new_id, true)?;
+        }
+        Ok(())
+    }
+
+    fn on_outer_focus(&mut self, focused: bool) -> Result<()> {
+        if self.outer_focus == focused {
+            return Ok(());
+        }
+        self.outer_focus = focused;
+        let id = self.focused_id();
+        self.send_focus_event(id, focused)
+    }
+
+    fn send_focus_event(&mut self, id: u64, focused: bool) -> Result<()> {
+        if let Some(pane) = self.pane_mut(id)
+            && pane.mode(Mode::FOCUS_EVENT)
+        {
+            pane.send(if focused { b"\x1b[I" } else { b"\x1b[O" })?;
+        }
+        Ok(())
+    }
+
+    fn on_paste(&mut self, text: String) -> Result<()> {
+        let bracketed = self.focused().mode(Mode::BRACKETED_PASTE);
+        let bytes = paste_bytes(&text, bracketed);
+        self.send_to_focus(&bytes)
     }
 
     fn relayout(&mut self) -> Result<()> {
@@ -434,6 +507,18 @@ fn dims_of(size: Size, area: Area) -> PaneDims {
     }
 }
 
+fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
+    if bracketed {
+        let mut bytes = Vec::with_capacity(text.len() + 12);
+        bytes.extend_from_slice(b"\x1b[200~");
+        bytes.extend_from_slice(text.as_bytes());
+        bytes.extend_from_slice(b"\x1b[201~");
+        bytes
+    } else {
+        text.as_bytes().to_vec()
+    }
+}
+
 fn paint_error(out: &mut Vec<u8>, area: Area, message: &str) {
     if area.w == 0 || area.h == 0 {
         return;
@@ -550,6 +635,12 @@ mod tests {
             hidden_area(size(80, 24), AppSize::Full),
             full_area(size(80, 24))
         );
+    }
+
+    #[test]
+    fn paste_wraps_only_when_bracketed() {
+        assert_eq!(paste_bytes("hi", false), b"hi");
+        assert_eq!(paste_bytes("hi", true), b"\x1b[200~hi\x1b[201~");
     }
 
     #[test]
