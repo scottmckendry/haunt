@@ -7,21 +7,27 @@ use std::{env, fs};
 /// unusual context, so it is only a fallback.
 pub fn default_shell() -> Vec<String> {
     let shell = account_shell()
-        .or_else(|| env::var("SHELL").ok().filter(|shell| !shell.is_empty()))
+        .or_else(|| {
+            env::var("SHELL")
+                .ok()
+                .map(|shell| shell.trim().to_string())
+                .filter(|shell| !shell.is_empty())
+        })
         .unwrap_or_else(|| "/bin/sh".to_string());
     vec![shell]
 }
 
 fn account_shell() -> Option<String> {
-    let user = env::var("USER").ok().or_else(|| env::var("LOGNAME").ok())?;
+    // Match by numeric uid rather than $USER/$LOGNAME, which can be stale or
+    // absent in containers and dev shells.
     let passwd = fs::read_to_string("/etc/passwd").ok()?;
-    shell_from_passwd(&passwd, &user)
+    shell_from_passwd(&passwd, unsafe { libc::getuid() })
 }
 
-fn shell_from_passwd(contents: &str, user: &str) -> Option<String> {
+fn shell_from_passwd(contents: &str, uid: u32) -> Option<String> {
     contents.lines().find_map(|line| {
         let fields: Vec<&str> = line.split(':').collect();
-        if fields.len() < 7 || fields[0] != user {
+        if fields.len() < 7 || fields[2].parse::<u32>().ok() != Some(uid) {
             return None;
         }
         let shell = fields[6];
@@ -46,20 +52,24 @@ carol:x:1002:1002:Carol:/home/carol:/bin/false
     #[test]
     fn selects_the_users_login_shell() {
         assert_eq!(
-            shell_from_passwd(PASSWD, "alice"),
+            shell_from_passwd(PASSWD, 1000),
             Some("/usr/bin/fish".to_string())
         );
     }
 
     #[test]
     fn ignores_missing_and_disabled_shells() {
-        assert_eq!(shell_from_passwd(PASSWD, "nobody"), None);
-        assert_eq!(shell_from_passwd(PASSWD, "bob"), None);
-        assert_eq!(shell_from_passwd(PASSWD, "carol"), None);
+        assert_eq!(shell_from_passwd(PASSWD, 65534), None);
+        assert_eq!(shell_from_passwd(PASSWD, 1001), None);
+        assert_eq!(shell_from_passwd(PASSWD, 1002), None);
     }
 
     #[test]
     fn ignores_malformed_lines() {
-        assert_eq!(shell_from_passwd("alice:x:1000", "alice"), None);
+        assert_eq!(shell_from_passwd("alice:x:1000", 1000), None);
+        assert_eq!(
+            shell_from_passwd("alice:x:not-a-uid:1000::/:/bin/sh", 1000),
+            None
+        );
     }
 }

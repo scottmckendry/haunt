@@ -4,7 +4,7 @@
 //! `~/.config/haunt/config.toml`). A missing file yields built-in defaults so
 //! haunt works out of the box.
 
-use std::{env, fs, path::PathBuf};
+use std::{env, ffi::OsString, fs, path::PathBuf};
 
 use anyhow::{Context, Result, bail};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventState, KeyModifiers};
@@ -139,7 +139,9 @@ pub struct Config {
 
 impl Config {
     pub fn load() -> Result<Self> {
-        let path = config_path();
+        let Some(path) = config_path() else {
+            return Ok(Self::builtin());
+        };
         match fs::read_to_string(&path) {
             Ok(text) => {
                 Self::parse(&text).with_context(|| format!("invalid config: {}", path.display()))
@@ -156,7 +158,7 @@ impl Config {
 
     fn from_raw(raw: RawConfig) -> Result<Self> {
         let shell = raw.shell.unwrap_or_else(shell::default_shell);
-        if shell.is_empty() || shell[0].is_empty() {
+        if shell.is_empty() || shell[0].trim().is_empty() {
             bail!("`shell` must not be empty");
         }
 
@@ -173,14 +175,19 @@ impl Config {
 
         let mut apps = Vec::with_capacity(raw.app.len());
         let mut seen_binds: Vec<(Chord, String)> = Vec::new();
+        let mut seen_names: Vec<String> = Vec::new();
 
         for raw_app in raw.app {
             if raw_app.name.trim().is_empty() {
                 bail!("app with empty name");
             }
-            if raw_app.cmd.is_empty() || raw_app.cmd[0].is_empty() {
+            if seen_names.contains(&raw_app.name) {
+                bail!("duplicate app name {:?}", raw_app.name);
+            }
+            if raw_app.cmd.is_empty() || raw_app.cmd[0].trim().is_empty() {
                 bail!("app {:?} has an empty `cmd`", raw_app.name);
             }
+            seen_names.push(raw_app.name.clone());
 
             let chord = Chord::parse(&raw_app.bind)
                 .with_context(|| format!("app {:?} has an invalid bind", raw_app.name))?;
@@ -241,16 +248,26 @@ fn builtin_app(name: &str, bind: &str, cmd: Vec<String>, size: AppSize) -> AppCo
     }
 }
 
-fn config_path() -> PathBuf {
-    if let Some(dir) = env::var_os("XDG_CONFIG_HOME") {
-        PathBuf::from(dir).join("haunt/config.toml")
-    } else {
-        let home = env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-        home.join(".config/haunt/config.toml")
-    }
+fn config_path() -> Option<PathBuf> {
+    config_path_from(env::var_os("XDG_CONFIG_HOME"), env::var_os("HOME"))
+}
+
+fn config_path_from(xdg: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
+    // The XDG spec requires relative paths to be ignored. An empty variable
+    // would otherwise resolve the config against the current directory.
+    let xdg = xdg.map(PathBuf::from).filter(|path| path.is_absolute());
+    let base = match xdg {
+        Some(path) => path,
+        None => {
+            let home = home.map(PathBuf::from).filter(|path| path.is_absolute())?;
+            home.join(".config")
+        }
+    };
+    Some(base.join("haunt/config.toml"))
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawConfig {
     #[serde(default)]
     shell: Option<Vec<String>>,
@@ -261,6 +278,7 @@ struct RawConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawApp {
     name: String,
     bind: String,
@@ -398,6 +416,44 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("share the same bind"));
+    }
+
+    #[test]
+    fn rejects_unknown_fields_and_duplicate_names() {
+        assert!(Config::parse("separatorr = '|'").is_err());
+        assert!(
+            Config::parse("[[app]]\nname = 'a'\nbind = 'ctrl+p'\ncmd = ['a']\nextra = 1").is_err()
+        );
+        let err = Config::parse(
+            "[[app]]\nname = 'a'\nbind = 'ctrl+p'\ncmd = ['a']\n\
+             [[app]]\nname = 'a'\nbind = 'ctrl+q'\ncmd = ['b']",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("duplicate app name"));
+    }
+
+    #[test]
+    fn rejects_whitespace_programs() {
+        assert!(Config::parse("shell = ['  ']").is_err());
+        assert!(Config::parse("[[app]]\nname = 'a'\nbind = 'ctrl+p'\ncmd = ['  ']").is_err());
+    }
+
+    #[test]
+    fn config_path_ignores_empty_and_relative_xdg() {
+        assert_eq!(
+            config_path_from(Some("/xdg".into()), Some("/home/me".into())),
+            Some(PathBuf::from("/xdg/haunt/config.toml"))
+        );
+        assert_eq!(
+            config_path_from(Some("".into()), Some("/home/me".into())),
+            Some(PathBuf::from("/home/me/.config/haunt/config.toml"))
+        );
+        assert_eq!(
+            config_path_from(Some("relative".into()), Some("/home/me".into())),
+            Some(PathBuf::from("/home/me/.config/haunt/config.toml"))
+        );
+        assert_eq!(config_path_from(None, None), None);
+        assert_eq!(config_path_from(None, Some("".into())), None);
     }
 
     #[test]
