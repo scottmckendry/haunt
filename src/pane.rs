@@ -12,16 +12,19 @@ use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use libghostty_vt::{
     RenderState, Terminal, TerminalOptions, mouse,
     render::{CellIterator, RowIterator},
+    screen::TrackedGridRef,
+    selection::{FormatOptions, SelectLineOptions, SelectWordBetweenOptions, Selection},
     terminal::{
-        ConformanceLevel, DeviceAttributeFeature, DeviceAttributes, DeviceType, Mode,
-        PrimaryDeviceAttributes, ScrollViewport, SecondaryDeviceAttributes, SizeReportSize,
+        ConformanceLevel, DeviceAttributeFeature, DeviceAttributes, DeviceType, Mode, Point,
+        PointCoordinate, PrimaryDeviceAttributes, ScrollViewport, SecondaryDeviceAttributes,
+        SizeReportSize,
     },
 };
 use portable_pty::{Child, MasterPty, PtySize};
 
 use crate::{
     input,
-    paint::{self, Area},
+    paint::{self, Area, PaintState},
     pty,
 };
 
@@ -41,6 +44,21 @@ impl PaneDims {
     fn pixel_height(self) -> u16 {
         (self.rows as u32 * self.cell_h as u32).min(u16::MAX as u32) as u16
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectKind {
+    Cell,
+    Word,
+    Line,
+}
+
+struct SelectionState {
+    anchor: TrackedGridRef,
+    focus: TrackedGridRef,
+    kind: SelectKind,
+    dragging: bool,
+    pointer: (u16, u16),
 }
 
 /// XTVERSION reply for inner programs.
@@ -91,11 +109,13 @@ pub struct Pane {
     render_state: RenderState<'static>,
     rows_it: RowIterator<'static>,
     cells_it: CellIterator<'static>,
+    paint_state: PaintState,
     responses: Arc<Mutex<Vec<u8>>>,
     dims: Arc<Mutex<PaneDims>>,
     mouse_encoder: mouse::Encoder<'static>,
     mouse_event: mouse::Event<'static>,
     mouse_down: bool,
+    selection: Option<SelectionState>,
     exited: bool,
     force_full: bool,
     focus_events: bool,
@@ -189,11 +209,13 @@ impl Pane {
                 render_state: RenderState::new()?,
                 rows_it: RowIterator::new()?,
                 cells_it: CellIterator::new()?,
+                paint_state: PaintState::default(),
                 responses,
                 dims: dims_shared,
                 mouse_encoder: mouse::Encoder::new()?,
                 mouse_event: mouse::Event::new()?,
                 mouse_down: false,
+                selection: None,
                 exited: false,
                 force_full: true,
                 focus_events: false,
@@ -256,11 +278,13 @@ impl Pane {
     }
 
     pub fn paint(&mut self, out: &mut Vec<u8>, area: Area, focused: bool) -> Result<()> {
+        self.sync_selection()?;
         let snapshot = self.render_state.update(&self.term)?;
         paint::draw(
             &snapshot,
             &mut self.rows_it,
             &mut self.cells_it,
+            &self.paint_state,
             out,
             area,
             self.force_full,
@@ -376,6 +400,156 @@ impl Pane {
         }
     }
 
+    /// Start a local selection at viewport cell `(x, y)`.
+    pub fn selection_start(&mut self, x: u16, y: u16, kind: SelectKind) -> Result<()> {
+        let point = Point::Viewport(PointCoordinate { x, y: y as u32 });
+        let anchor = self.term.track_grid_ref(point)?;
+        let focus = self.term.track_grid_ref(point)?;
+        self.selection = Some(SelectionState {
+            anchor,
+            focus,
+            kind,
+            dragging: false,
+            pointer: (x, y),
+        });
+        self.sync_selection()?;
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Extend the active local selection to viewport cell `(x, y)`.
+    pub fn selection_drag(&mut self, x: u16, y: u16) -> Result<()> {
+        if self.selection.is_none() {
+            return Ok(());
+        }
+        if let Some(selection) = self.selection.as_mut() {
+            selection.pointer = (x, y);
+            selection.dragging = true;
+            let point = Point::Viewport(PointCoordinate { x, y: y as u32 });
+            selection.focus.set(&mut self.term, point)?;
+        }
+        self.sync_selection()?;
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Finish a selection and return its text when it should be copied.
+    ///
+    /// A plain click (no drag) clears the selection and returns `None`.
+    pub fn selection_finish(&mut self) -> Result<Option<Vec<u8>>> {
+        let Some(selection) = self.selection.as_ref() else {
+            return Ok(None);
+        };
+        if selection.kind == SelectKind::Cell && !selection.dragging {
+            self.clear_selection()?;
+            return Ok(None);
+        }
+
+        self.sync_selection()?;
+        let bytes = self
+            .term
+            .format_selection_alloc(None, FormatOptions::new().with_unwrap(true).with_trim(true))?;
+        Ok(bytes
+            .map(|bytes| bytes.to_vec())
+            .filter(|bytes| !bytes.is_empty()))
+    }
+
+    /// Drop any local selection.
+    pub fn clear_selection(&mut self) -> Result<()> {
+        if self.selection.take().is_some() {
+            self.term.set_selection(None)?;
+            self.dirty = true;
+        }
+        Ok(())
+    }
+
+    /// Keep dragging a selection alive past the pane edge.
+    ///
+    /// Returns `true` when the viewport moved.
+    pub fn selection_autoscroll(&mut self) -> Result<bool> {
+        let Some((x, y, dragging)) = self
+            .selection
+            .as_ref()
+            .map(|selection| (selection.pointer.0, selection.pointer.1, selection.dragging))
+        else {
+            return Ok(false);
+        };
+        if !dragging {
+            return Ok(false);
+        }
+
+        let rows = self.dims.lock().unwrap().rows;
+        let (delta, edge) = if y == 0 {
+            (-1isize, 0u16)
+        } else if y >= rows.saturating_sub(1) {
+            (1isize, rows.saturating_sub(1))
+        } else {
+            return Ok(false);
+        };
+
+        let before = self.term.scrollbar()?.offset;
+        self.term.scroll_viewport(ScrollViewport::Delta(delta));
+        if self.term.scrollbar()?.offset == before {
+            return Ok(false);
+        }
+
+        if let Some(selection) = self.selection.as_mut() {
+            let point = Point::Viewport(PointCoordinate { x, y: edge as u32 });
+            selection.focus.set(&mut self.term, point)?;
+        }
+        self.sync_selection()?;
+        self.dirty = true;
+        Ok(true)
+    }
+
+    fn sync_selection(&self) -> Result<()> {
+        let Some(selection) = self.selection.as_ref() else {
+            self.term.set_selection(None)?;
+            return Ok(());
+        };
+        let selection = self.build_selection(selection)?;
+        self.term.set_selection(selection.as_ref())?;
+        Ok(())
+    }
+
+    fn build_selection<'a>(&'a self, state: &SelectionState) -> Result<Option<Selection<'a>>> {
+        let Some(anchor) = state.anchor.snapshot(&self.term)? else {
+            return Ok(None);
+        };
+        let Some(focus) = state.focus.snapshot(&self.term)? else {
+            return Ok(None);
+        };
+
+        let selection = match state.kind {
+            SelectKind::Cell => Selection::new(anchor, focus, false),
+            SelectKind::Word => {
+                let start = self
+                    .term
+                    .select_word_between(SelectWordBetweenOptions::new(
+                        anchor.clone(),
+                        focus.clone(),
+                    ))?;
+                let end = self
+                    .term
+                    .select_word_between(SelectWordBetweenOptions::new(focus, anchor))?;
+                match (start, end) {
+                    (Some(start), Some(end)) => Selection::new(start.start(), end.end(), false),
+                    _ => return Ok(None),
+                }
+            }
+            SelectKind::Line => {
+                let start = self.term.select_line(SelectLineOptions::new(anchor))?;
+                let end = self.term.select_line(SelectLineOptions::new(focus))?;
+                match (start, end) {
+                    (Some(start), Some(end)) => Selection::new(start.start(), end.end(), false),
+                    _ => return Ok(None),
+                }
+            }
+        };
+
+        Ok(Some(selection))
+    }
+
     /// The working directory of the pane's current foreground process.
     pub fn cwd(&self) -> Option<PathBuf> {
         let pgid = self.master.process_group_leader()?;
@@ -427,6 +601,66 @@ impl Drop for Pane {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cell_word_and_line_selections_format() {
+        let (mut pane, _reader) = Pane::spawn(
+            4,
+            &["/bin/sh".to_string()],
+            None,
+            PaneDims {
+                cols: 25,
+                rows: 5,
+                cell_w: 8,
+                cell_h: 16,
+            },
+        )
+        .unwrap();
+        pane.feed(b"hello world\r\nsecond line\r\n").unwrap();
+
+        // A click without a drag clears instead of copying one cell.
+        pane.selection_start(0, 0, SelectKind::Cell).unwrap();
+        assert_eq!(pane.selection_finish().unwrap(), None);
+
+        pane.selection_start(0, 0, SelectKind::Cell).unwrap();
+        pane.selection_drag(4, 0).unwrap();
+        assert_eq!(
+            pane.selection_finish().unwrap().as_deref(),
+            Some(&b"hello"[..])
+        );
+
+        // Drags are directional.
+        pane.selection_start(4, 0, SelectKind::Cell).unwrap();
+        pane.selection_drag(0, 0).unwrap();
+        assert_eq!(
+            pane.selection_finish().unwrap().as_deref(),
+            Some(&b"hello"[..])
+        );
+
+        // Double-click a word.
+        pane.selection_start(1, 0, SelectKind::Word).unwrap();
+        assert_eq!(
+            pane.selection_finish().unwrap().as_deref(),
+            Some(&b"hello"[..])
+        );
+
+        // Double-click then drag selects to the nearest word.
+        pane.selection_start(1, 0, SelectKind::Word).unwrap();
+        pane.selection_drag(8, 0).unwrap();
+        assert_eq!(
+            pane.selection_finish().unwrap().as_deref(),
+            Some(&b"hello world"[..])
+        );
+
+        // Triple-click selects the line, trimmed.
+        pane.selection_start(1, 0, SelectKind::Line).unwrap();
+        assert_eq!(
+            pane.selection_finish().unwrap().as_deref(),
+            Some(&b"hello world"[..])
+        );
+
+        pane.shutdown();
+    }
 
     #[test]
     fn enabling_focus_events_is_signalled_once() {
@@ -484,6 +718,35 @@ mod tests {
 
         pane.scroll_to_live();
         assert_eq!(pane.term().scrollbar().unwrap().offset, bottom.offset);
+
+        pane.shutdown();
+    }
+
+    #[test]
+    fn selection_autoscroll_moves_the_viewport() {
+        let (mut pane, _reader) = Pane::spawn(
+            5,
+            &["/bin/sh".to_string()],
+            None,
+            PaneDims {
+                cols: 20,
+                rows: 5,
+                cell_w: 8,
+                cell_h: 16,
+            },
+        )
+        .unwrap();
+
+        for i in 0..50 {
+            pane.feed(format!("line {i}\r\n").as_bytes()).unwrap();
+        }
+        pane.scroll(-10).unwrap();
+        let before = pane.term().scrollbar().unwrap().offset;
+
+        pane.selection_start(0, 0, SelectKind::Cell).unwrap();
+        pane.selection_drag(0, 4).unwrap();
+        assert!(pane.selection_autoscroll().unwrap());
+        assert_eq!(pane.term().scrollbar().unwrap().offset, before + 1);
 
         pane.shutdown();
     }

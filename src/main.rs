@@ -5,6 +5,7 @@
 //! native features.
 
 mod app;
+mod base64;
 mod config;
 mod input;
 mod paint;
@@ -105,6 +106,7 @@ fn run() -> Result<i32> {
             }
         }
 
+        app.tick()?;
         app.render(&mut stdout)?;
     }
 

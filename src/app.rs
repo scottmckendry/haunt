@@ -5,21 +5,22 @@ use std::{
     io::{ErrorKind, Read, Write},
     sync::mpsc::{SyncSender, sync_channel},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::Result;
 use crossterm::{
-    event::{Event, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind},
+    event::{Event, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind},
     terminal,
 };
 use libghostty_vt::{key, terminal::Mode};
 
 use crate::{
+    base64,
     config::{AppSize, Config},
     input,
     paint::Area,
-    pane::{Pane, PaneDims},
+    pane::{Pane, PaneDims, SelectKind},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +44,13 @@ enum Focus {
     Aux,
 }
 
+struct ClickState {
+    time: Instant,
+    x: u16,
+    y: u16,
+    count: u8,
+}
+
 pub struct App {
     cfg: Config,
     main: Pane,
@@ -59,6 +67,10 @@ pub struct App {
     exit_code: i32,
     error: Option<String>,
     outer_focus: bool,
+    selecting: Option<u64>,
+    click: Option<ClickState>,
+    last_autoscroll: Instant,
+    pending_writes: Vec<u8>,
 }
 
 impl App {
@@ -83,6 +95,10 @@ impl App {
             exit_code: 0,
             error: None,
             outer_focus: true,
+            selecting: None,
+            click: None,
+            last_autoscroll: Instant::now(),
+            pending_writes: Vec::new(),
         })
     }
 
@@ -134,6 +150,11 @@ impl App {
     }
 
     pub fn render(&mut self, out: &mut impl Write) -> Result<()> {
+        if !self.pending_writes.is_empty() {
+            out.write_all(&self.pending_writes)?;
+            out.flush()?;
+            self.pending_writes.clear();
+        }
         if !self.needs_frame() {
             return Ok(());
         }
@@ -192,6 +213,11 @@ impl App {
 
     fn on_key(&mut self, ev: KeyEvent) -> Result<()> {
         self.clear_error();
+
+        // Typing clears a local selection, as in Ghostty.
+        if ev.kind != KeyEventKind::Release {
+            self.clear_selections()?;
+        }
 
         if ev.kind != KeyEventKind::Release {
             self.focused_mut().scroll_to_live();
@@ -377,6 +403,39 @@ impl App {
     }
 
     fn on_mouse(&mut self, ev: MouseEvent) -> Result<()> {
+        // A drag or release belongs to the pane where the selection started,
+        // even when the pointer has left that pane.
+        if matches!(
+            ev.kind,
+            MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)
+        ) && let Some(id) = self.selecting
+        {
+            let Some(area) = self.pane_area(id) else {
+                self.selecting = None;
+                return Ok(());
+            };
+            let (x, y) = local_cell(area, ev.column, ev.row);
+            let finished = if let Some(pane) = self.pane_mut(id) {
+                match ev.kind {
+                    MouseEventKind::Drag(MouseButton::Left) => {
+                        pane.selection_drag(x, y)?;
+                        None
+                    }
+                    MouseEventKind::Up(MouseButton::Left) => pane.selection_finish()?,
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            if matches!(ev.kind, MouseEventKind::Up(MouseButton::Left)) {
+                self.selecting = None;
+                if let Some(text) = finished {
+                    self.copy_selection(&text);
+                }
+            }
+            return Ok(());
+        }
+
         let Some((area, id)) = self.pane_at(ev.column, ev.row) else {
             return Ok(());
         };
@@ -384,27 +443,95 @@ impl App {
         // A click focuses the pane under the pointer, whichever pane it is.
         if matches!(ev.kind, MouseEventKind::Down(_)) {
             self.focus_pane(id)?;
+            self.clear_selections()?;
         }
 
         // Shift overrides app mouse capture, as in Ghostty.
         let tracks = self.pane_mut(id).is_some_and(|pane| pane.tracks_mouse());
         let local = ev.modifiers.contains(KeyModifiers::SHIFT) || !tracks;
 
-        if local {
-            let delta = match ev.kind {
-                MouseEventKind::ScrollUp => -3,
-                MouseEventKind::ScrollDown => 3,
-                _ => return Ok(()),
+        if local && let MouseEventKind::Down(MouseButton::Left) = ev.kind {
+            let count = self.next_click_count(ev.column, ev.row);
+            let kind = match count {
+                1 => SelectKind::Cell,
+                2 => SelectKind::Word,
+                _ => SelectKind::Line,
             };
+            let (x, y) = local_cell(area, ev.column, ev.row);
             if let Some(pane) = self.pane_mut(id) {
-                pane.scroll(delta)?;
-                self.frame_dirty = true;
+                pane.selection_start(x, y, kind)?;
             }
+            self.selecting = Some(id);
             return Ok(());
         }
 
-        if let Some(pane) = self.pane_mut(id) {
-            pane.send_mouse(ev, area)?;
+        let Some(pane) = self.pane_mut(id) else {
+            return Ok(());
+        };
+
+        if !local && pane.tracks_mouse() {
+            return pane.send_mouse(ev, area);
+        }
+
+        match ev.kind {
+            MouseEventKind::ScrollUp => pane.scroll(-3),
+            MouseEventKind::ScrollDown => pane.scroll(3),
+            _ => Ok(()),
+        }
+    }
+
+    fn next_click_count(&mut self, x: u16, y: u16) -> u8 {
+        let now = Instant::now();
+        let count = match &self.click {
+            Some(click)
+                if now.duration_since(click.time) <= Duration::from_millis(400)
+                    && click.x.abs_diff(x) <= 2
+                    && click.y.abs_diff(y) <= 2 =>
+            {
+                (click.count % 3) + 1
+            }
+            _ => 1,
+        };
+        self.click = Some(ClickState {
+            time: now,
+            x,
+            y,
+            count,
+        });
+        count
+    }
+
+    fn clear_selections(&mut self) -> Result<()> {
+        self.selecting = None;
+        self.main.clear_selection()?;
+        for pane in self.aux.iter_mut().flatten() {
+            pane.clear_selection()?;
+        }
+        Ok(())
+    }
+
+    fn copy_selection(&mut self, text: &[u8]) {
+        self.pending_writes.extend_from_slice(b"\x1b]52;c;");
+        base64::encode_into(text, &mut self.pending_writes);
+        self.pending_writes.push(0x07);
+    }
+
+    /// Timed work for selection autoscroll; called once per event-loop tick.
+    pub fn tick(&mut self) -> Result<()> {
+        let Some(id) = self.selecting else {
+            return Ok(());
+        };
+        let now = Instant::now();
+        if now.duration_since(self.last_autoscroll) < Duration::from_millis(40) {
+            return Ok(());
+        }
+        let moved = self
+            .pane_mut(id)
+            .map(Pane::selection_autoscroll)
+            .transpose()?
+            .unwrap_or(false);
+        if moved {
+            self.last_autoscroll = now;
         }
         Ok(())
     }
@@ -427,6 +554,20 @@ impl App {
         let old_id = self.focused_id();
         self.focus = target;
         self.focus_changed(old_id)
+    }
+
+    fn pane_area(&self, id: u64) -> Option<Area> {
+        let visible_size = self.visible.map(|idx| self.cfg.apps[idx].size);
+        let (main_area, aux_area) = layout(self.size, visible_size);
+        if self.main.id == id {
+            return Some(main_area);
+        }
+        let visible = self.visible?;
+        self.aux[visible]
+            .as_ref()
+            .is_some_and(|pane| pane.id == id)
+            .then_some(aux_area)
+            .flatten()
     }
 
     fn pane_at(&self, x: u16, y: u16) -> Option<(Area, u64)> {
@@ -452,6 +593,7 @@ impl App {
     }
 
     fn on_paste(&mut self, text: String) -> Result<()> {
+        self.clear_selections()?;
         let bracketed = self.focused().mode(Mode::BRACKETED_PASTE);
         let bytes = paste_bytes(&text, bracketed);
         self.send_to_focus(&bytes)
@@ -532,6 +674,13 @@ fn contains(area: Area, x: u16, y: u16) -> bool {
         && x < area.x.saturating_add(area.w)
         && y >= area.y
         && y < area.y.saturating_add(area.h)
+}
+
+fn local_cell(area: Area, x: u16, y: u16) -> (u16, u16) {
+    let clamp = |value: u16, origin: u16, len: u16| {
+        (value as i32 - origin as i32).clamp(0, len.saturating_sub(1) as i32) as u16
+    };
+    (clamp(x, area.x, area.w), clamp(y, area.y, area.h))
 }
 
 fn full_area(size: Size) -> Area {

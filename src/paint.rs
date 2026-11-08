@@ -21,10 +21,18 @@ pub struct Area {
     pub h: u16,
 }
 
+/// Painting options that are not part of a snapshot.
+#[derive(Default)]
+pub struct PaintState {
+    pub selection_fg: Option<RgbColor>,
+    pub selection_bg: Option<RgbColor>,
+}
+
 pub fn draw<'a>(
     snapshot: &Snapshot<'a, '_>,
     row_it: &mut RowIterator<'a>,
     cell_it: &mut CellIterator<'a>,
+    state: &PaintState,
     out: &mut Vec<u8>,
     area: Area,
     force: bool,
@@ -60,7 +68,13 @@ pub fn draw<'a>(
             } else {
                 Style::default()
             };
-            let sgr = sgr_for(&style, cell.fg_color()?, cell.bg_color()?);
+            let sgr = sgr_for(
+                state,
+                &style,
+                cell.fg_color()?,
+                cell.bg_color()?,
+                cell.is_selected()?,
+            );
 
             let mut text = String::new();
             cell.graphemes_utf8(&mut text)?;
@@ -158,7 +172,13 @@ struct Sgr {
     ul: Option<RgbColor>,
 }
 
-fn sgr_for(style: &Style, fg: Option<RgbColor>, bg: Option<RgbColor>) -> Sgr {
+fn sgr_for(
+    state: &PaintState,
+    style: &Style,
+    fg: Option<RgbColor>,
+    bg: Option<RgbColor>,
+    selected: bool,
+) -> Sgr {
     let underline = match style.underline {
         Underline::None => 0,
         Underline::Single => 1,
@@ -172,6 +192,17 @@ fn sgr_for(style: &Style, fg: Option<RgbColor>, bg: Option<RgbColor>) -> Sgr {
         StyleColor::Rgb(rgb) => Some(rgb),
         _ => None,
     };
+    let (fg, bg, inverse) = if selected {
+        // Prefer the theme's selection colours. Until theme inheritance lands,
+        // fall back to inverse so the highlight is still opaque.
+        (
+            state.selection_fg.or(fg),
+            state.selection_bg.or(bg),
+            state.selection_bg.is_none(),
+        )
+    } else {
+        (fg, bg, style.inverse)
+    };
 
     Sgr {
         bold: style.bold,
@@ -179,7 +210,7 @@ fn sgr_for(style: &Style, fg: Option<RgbColor>, bg: Option<RgbColor>) -> Sgr {
         italic: style.italic,
         underline,
         blink: style.blink,
-        inverse: style.inverse,
+        inverse,
         invisible: style.invisible,
         strikethrough: style.strikethrough,
         overline: style.overline,
@@ -257,6 +288,8 @@ mod tests {
     use libghostty_vt::{
         RenderState, Terminal, TerminalOptions,
         render::{CellIterator, RowIterator},
+        selection::Selection,
+        terminal::{Point, PointCoordinate},
     };
 
     fn area(cols: u16, rows: u16) -> Area {
@@ -268,19 +301,7 @@ mod tests {
         }
     }
 
-    fn draw_term(
-        term: &Terminal<'static, 'static>,
-        render_state: &mut RenderState<'static>,
-        rows: &mut RowIterator<'static>,
-        cells: &mut CellIterator<'static>,
-        out: &mut Vec<u8>,
-    ) -> Result<()> {
-        let snapshot = render_state.update(term)?;
-        draw(&snapshot, rows, cells, out, area(20, 4), false)
-    }
-
-    #[test]
-    fn default_background_cells_emit_no_background() {
+    fn term_with(text: &[u8]) -> Terminal<'static, 'static> {
         let mut term: Terminal<'static, 'static> = Terminal::new(TerminalOptions {
             cols: 20,
             rows: 4,
@@ -288,13 +309,49 @@ mod tests {
         })
         .unwrap();
         term.resize(20, 4, 8, 16).unwrap();
-        term.vt_write(b"hello");
+        term.vt_write(text);
+        term
+    }
 
+    fn draw_term(
+        term: &Terminal<'static, 'static>,
+        render_state: &mut RenderState<'static>,
+        rows: &mut RowIterator<'static>,
+        cells: &mut CellIterator<'static>,
+        state: &PaintState,
+        out: &mut Vec<u8>,
+    ) -> Result<()> {
+        let snapshot = render_state.update(term)?;
+        draw(&snapshot, rows, cells, state, out, area(20, 4), false)
+    }
+
+    fn select(term: &Terminal<'static, 'static>, start: u16, end: u16) {
+        let start = term
+            .grid_ref(Point::Viewport(PointCoordinate { x: start, y: 0 }))
+            .unwrap();
+        let end = term
+            .grid_ref(Point::Viewport(PointCoordinate { x: end, y: 0 }))
+            .unwrap();
+        let selection = Selection::new(start, end, false);
+        term.set_selection(Some(&selection)).unwrap();
+    }
+
+    #[test]
+    fn default_background_cells_emit_no_background() {
+        let term = term_with(b"hello");
         let mut render_state = RenderState::new().unwrap();
         let mut rows = RowIterator::new().unwrap();
         let mut cells = CellIterator::new().unwrap();
         let mut out = Vec::new();
-        draw_term(&term, &mut render_state, &mut rows, &mut cells, &mut out).unwrap();
+        draw_term(
+            &term,
+            &mut render_state,
+            &mut rows,
+            &mut cells,
+            &PaintState::default(),
+            &mut out,
+        )
+        .unwrap();
 
         let text = String::from_utf8_lossy(&out);
         assert!(text.contains("hello"), "{text:?}");
@@ -306,53 +363,126 @@ mod tests {
 
     #[test]
     fn clean_snapshots_paint_nothing() {
-        let mut term: Terminal<'static, 'static> = Terminal::new(TerminalOptions {
-            cols: 20,
-            rows: 4,
-            max_scrollback: 0,
-        })
-        .unwrap();
-        term.resize(20, 4, 8, 16).unwrap();
-        term.vt_write(b"hello");
-
+        let term = term_with(b"hello");
         let mut render_state = RenderState::new().unwrap();
         let mut rows = RowIterator::new().unwrap();
         let mut cells = CellIterator::new().unwrap();
 
         let mut first = Vec::new();
-        draw_term(&term, &mut render_state, &mut rows, &mut cells, &mut first).unwrap();
+        draw_term(
+            &term,
+            &mut render_state,
+            &mut rows,
+            &mut cells,
+            &PaintState::default(),
+            &mut first,
+        )
+        .unwrap();
         assert!(!first.is_empty());
 
         let mut second = Vec::new();
-        draw_term(&term, &mut render_state, &mut rows, &mut cells, &mut second).unwrap();
+        draw_term(
+            &term,
+            &mut render_state,
+            &mut rows,
+            &mut cells,
+            &PaintState::default(),
+            &mut second,
+        )
+        .unwrap();
         assert!(second.is_empty(), "dirty rows were repainted: {second:?}");
     }
 
     #[test]
     fn clearing_a_line_repaints_spaces() {
-        let mut term: Terminal<'static, 'static> = Terminal::new(TerminalOptions {
-            cols: 20,
-            rows: 4,
-            max_scrollback: 0,
-        })
-        .unwrap();
-        term.resize(20, 4, 8, 16).unwrap();
-        term.vt_write(b"hello");
-
+        let mut term = term_with(b"hello");
         let mut render_state = RenderState::new().unwrap();
         let mut rows = RowIterator::new().unwrap();
         let mut cells = CellIterator::new().unwrap();
         let mut first = Vec::new();
-        draw_term(&term, &mut render_state, &mut rows, &mut cells, &mut first).unwrap();
+        draw_term(
+            &term,
+            &mut render_state,
+            &mut rows,
+            &mut cells,
+            &PaintState::default(),
+            &mut first,
+        )
+        .unwrap();
 
         term.vt_write(b"\r\x1b[2K");
         let mut second = Vec::new();
-        draw_term(&term, &mut render_state, &mut rows, &mut cells, &mut second).unwrap();
+        draw_term(
+            &term,
+            &mut render_state,
+            &mut rows,
+            &mut cells,
+            &PaintState::default(),
+            &mut second,
+        )
+        .unwrap();
         let text = String::from_utf8_lossy(&second);
         assert!(
             text.contains(' '),
             "cleared row painted no blanks: {text:?}"
         );
         assert!(!text.contains("hello"), "stale text remained: {text:?}");
+    }
+
+    #[test]
+    fn selected_blank_cells_paint_the_selection_background() {
+        let term = term_with(b"hello");
+        select(&term, 0, 9);
+
+        let state = PaintState {
+            selection_fg: None,
+            selection_bg: Some(RgbColor {
+                r: 0x3c,
+                g: 0x40,
+                b: 0x48,
+            }),
+        };
+        let mut render_state = RenderState::new().unwrap();
+        let mut rows = RowIterator::new().unwrap();
+        let mut cells = CellIterator::new().unwrap();
+        let mut out = Vec::new();
+        draw_term(
+            &term,
+            &mut render_state,
+            &mut rows,
+            &mut cells,
+            &state,
+            &mut out,
+        )
+        .unwrap();
+
+        let text = String::from_utf8_lossy(&out);
+        assert!(
+            text.contains("48;2;60;64;72"),
+            "selection background missing: {text:?}"
+        );
+    }
+
+    #[test]
+    fn selection_falls_back_to_inverse_without_theme_colours() {
+        let term = term_with(b"hello");
+        select(&term, 0, 4);
+
+        let mut render_state = RenderState::new().unwrap();
+        let mut rows = RowIterator::new().unwrap();
+        let mut cells = CellIterator::new().unwrap();
+        let mut out = Vec::new();
+        draw_term(
+            &term,
+            &mut render_state,
+            &mut rows,
+            &mut cells,
+            &PaintState::default(),
+            &mut out,
+        )
+        .unwrap();
+
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.contains("\x1b[0;7;"), "inverse missing: {text:?}");
     }
 }
