@@ -23,12 +23,18 @@ use libghostty_vt::{
 use portable_pty::{Child, MasterPty, PtySize};
 
 use crate::{
-    base64, input,
+    base64,
+    graphics::Graphics,
+    input,
     osc::{self, Event, ProgressUpdate},
     paint::{self, Area, PaintState},
     pty,
     theme::Theme,
 };
+
+/// Per-pane cap on libghostty's Kitty image storage. This bounds the memory
+/// used by images a pane can retain without silently dropping smaller images.
+const KITTY_IMAGE_STORAGE_LIMIT: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaneDims {
@@ -172,6 +178,13 @@ impl Pane {
             theme.apply(&mut term)?;
         }
         term.resize(dims.cols, dims.rows, dims.cell_w as u32, dims.cell_h as u32)?;
+        // Snacks and similar clients transmit images by local file path
+        // (`t=f`) rather than embedding the payload, so allow every medium
+        // the library supports in addition to direct data.
+        term.set_kitty_image_storage_limit(KITTY_IMAGE_STORAGE_LIMIT)?
+            .set_kitty_image_from_file_allowed(true)?
+            .set_kitty_image_from_temp_file_allowed(true)?
+            .set_kitty_image_from_shared_mem_allowed(true)?;
 
         {
             let responses = Arc::clone(&responses);
@@ -360,18 +373,31 @@ impl Pane {
         Ok(())
     }
 
-    pub fn paint(&mut self, out: &mut Vec<u8>, area: Area, focused: bool) -> Result<()> {
+    pub fn paint(
+        &mut self,
+        out: &mut Vec<u8>,
+        area: Area,
+        focused: bool,
+        graphics: &mut Graphics,
+    ) -> Result<()> {
         self.sync_selection()?;
         let snapshot = self.render_state.update(&self.term)?;
+
+        // Forward image data and placements first: the painter needs the
+        // image-ID mapping to rewrite Unicode placeholder cells.
+        let graphics_repaint = graphics.draw_pane(self.id, &self.term, out, area)?;
+
         paint::draw(
             &snapshot,
             &self.term,
+            graphics,
+            self.id,
             &mut self.rows_it,
             &mut self.cells_it,
             &self.paint_state,
             out,
             area,
-            self.force_full,
+            self.force_full || graphics_repaint,
         )?;
         if focused {
             paint::draw_cursor(&snapshot, out, area)?;
@@ -712,6 +738,27 @@ impl Drop for Pane {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enables_kitty_image_file_mediums() {
+        let (pane, _reader) = Pane::spawn(
+            5,
+            &["/bin/sh".to_string()],
+            None,
+            PaneDims {
+                cols: 20,
+                rows: 4,
+                cell_w: 8,
+                cell_h: 16,
+            },
+            None,
+        )
+        .unwrap();
+        let term = pane.term();
+        assert!(term.is_kitty_image_from_file_allowed().unwrap());
+        assert!(term.is_kitty_image_from_temp_file_allowed().unwrap());
+        assert!(term.is_kitty_image_from_shared_mem_allowed().unwrap());
+    }
 
     #[test]
     fn cell_word_and_line_selections_format() {

@@ -7,6 +7,7 @@
 mod app;
 mod base64;
 mod config;
+mod graphics;
 mod input;
 mod osc;
 mod paint;
