@@ -8,17 +8,19 @@ use std::{
 };
 
 use anyhow::Result;
+use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use libghostty_vt::{
-    RenderState, Terminal, TerminalOptions,
+    RenderState, Terminal, TerminalOptions, mouse,
     render::{CellIterator, RowIterator},
     terminal::{
         ConformanceLevel, DeviceAttributeFeature, DeviceAttributes, DeviceType, Mode,
-        PrimaryDeviceAttributes, SecondaryDeviceAttributes, SizeReportSize,
+        PrimaryDeviceAttributes, ScrollViewport, SecondaryDeviceAttributes, SizeReportSize,
     },
 };
 use portable_pty::{Child, MasterPty, PtySize};
 
 use crate::{
+    input,
     paint::{self, Area},
     pty,
 };
@@ -91,6 +93,9 @@ pub struct Pane {
     cells_it: CellIterator<'static>,
     responses: Arc<Mutex<Vec<u8>>>,
     dims: Arc<Mutex<PaneDims>>,
+    mouse_encoder: mouse::Encoder<'static>,
+    mouse_event: mouse::Event<'static>,
+    mouse_down: bool,
     exited: bool,
     force_full: bool,
     focus_events: bool,
@@ -186,6 +191,9 @@ impl Pane {
                 cells_it: CellIterator::new()?,
                 responses,
                 dims: dims_shared,
+                mouse_encoder: mouse::Encoder::new()?,
+                mouse_event: mouse::Event::new()?,
+                mouse_down: false,
                 exited: false,
                 force_full: true,
                 focus_events: false,
@@ -274,6 +282,99 @@ impl Pane {
     pub fn term(&self) -> &Terminal<'static, 'static> {
         &self.term
     }
+    /// Whether the inner program asked for mouse reporting.
+    pub fn tracks_mouse(&self) -> bool {
+        self.term.is_mouse_tracking().unwrap_or(false)
+    }
+
+    /// Encode a mouse event for this pane and write it to the PTY.
+    ///
+    /// `ev` is in outer-terminal cells; `area` is the pane's rectangle, used
+    /// to translate into pane-local coordinates and supply encoder geometry.
+    pub fn send_mouse(&mut self, ev: MouseEvent, area: Area) -> Result<()> {
+        let (action, button) = match ev.kind {
+            MouseEventKind::Down(b) => (mouse::Action::Press, Some(mouse_button(b))),
+            MouseEventKind::Up(b) => (mouse::Action::Release, Some(mouse_button(b))),
+            MouseEventKind::Drag(b) => (mouse::Action::Motion, Some(mouse_button(b))),
+            MouseEventKind::Moved => (mouse::Action::Motion, None),
+            MouseEventKind::ScrollUp => (mouse::Action::Press, Some(mouse::Button::Four)),
+            MouseEventKind::ScrollDown => (mouse::Action::Press, Some(mouse::Button::Five)),
+            MouseEventKind::ScrollLeft => (mouse::Action::Press, Some(mouse::Button::Six)),
+            MouseEventKind::ScrollRight => (mouse::Action::Press, Some(mouse::Button::Seven)),
+        };
+
+        if action == mouse::Action::Press {
+            self.mouse_down = true;
+        } else if action == mouse::Action::Release {
+            self.mouse_down = false;
+        }
+
+        let dims = *self.dims.lock().unwrap();
+        let cell_w = u32::from(dims.cell_w.max(1));
+        let cell_h = u32::from(dims.cell_h.max(1));
+        let x = f32::from(ev.column.saturating_sub(area.x));
+        let y = f32::from(ev.row.saturating_sub(area.y));
+
+        self.mouse_event
+            .set_action(action)
+            .set_button(button)
+            .set_mods(input::mods_from(ev.modifiers))
+            .set_position(mouse::Position {
+                x: (x + 0.5) * cell_w as f32,
+                y: (y + 0.5) * cell_h as f32,
+            });
+
+        self.mouse_encoder
+            .set_options_from_terminal(&self.term)
+            .set_size(mouse::EncoderSize {
+                screen_width: u32::from(area.w) * cell_w,
+                screen_height: u32::from(area.h) * cell_h,
+                cell_width: cell_w,
+                cell_height: cell_h,
+                padding_top: 0,
+                padding_bottom: 0,
+                padding_right: 0,
+                padding_left: 0,
+            })
+            .set_any_button_pressed(self.mouse_down)
+            .set_track_last_cell(true);
+
+        let mut buf = Vec::with_capacity(32);
+        self.mouse_encoder
+            .encode_to_vec(&self.mouse_event, &mut buf)?;
+        self.send(&buf)
+    }
+
+    /// Scroll the viewport by `delta` rows (negative is up).
+    ///
+    /// Does nothing when the pane has no scrollback, including on the
+    /// alternate screen.
+    pub fn scroll(&mut self, delta: isize) -> Result<()> {
+        let before = self.term.scrollbar()?;
+        if before.total <= before.len {
+            return Ok(());
+        }
+        self.term.scroll_viewport(ScrollViewport::Delta(delta));
+        if self.term.scrollbar()?.offset != before.offset {
+            self.dirty = true;
+        }
+        Ok(())
+    }
+
+    /// Return the viewport to the live screen.
+    pub fn scroll_to_live(&mut self) {
+        let Ok(before) = self.term.scrollbar() else {
+            return;
+        };
+        self.term.scroll_viewport(ScrollViewport::Bottom);
+        if self
+            .term
+            .scrollbar()
+            .is_ok_and(|after| after.offset != before.offset)
+        {
+            self.dirty = true;
+        }
+    }
 
     /// The working directory of the pane's current foreground process.
     pub fn cwd(&self) -> Option<PathBuf> {
@@ -306,6 +407,14 @@ impl Pane {
         self.writer.lock().unwrap().write_all(&responses)?;
         responses.clear();
         Ok(())
+    }
+}
+
+fn mouse_button(button: MouseButton) -> mouse::Button {
+    match button {
+        MouseButton::Left => mouse::Button::Left,
+        MouseButton::Right => mouse::Button::Right,
+        MouseButton::Middle => mouse::Button::Middle,
     }
 }
 
@@ -343,6 +452,60 @@ mod tests {
         pane.feed(b"\x1b[?1004l").unwrap();
         pane.feed(b"\x1b[?1004h").unwrap();
         assert!(pane.take_focus_events_pending());
+
+        pane.shutdown();
+    }
+
+    #[test]
+    fn scroll_moves_the_viewport_and_returns_to_live() {
+        let (mut pane, _reader) = Pane::spawn(
+            2,
+            &["/bin/sh".to_string()],
+            None,
+            PaneDims {
+                cols: 20,
+                rows: 5,
+                cell_w: 8,
+                cell_h: 16,
+            },
+        )
+        .unwrap();
+
+        for i in 0..50 {
+            pane.feed(format!("line {i}\r\n").as_bytes()).unwrap();
+        }
+
+        let bottom = pane.term().scrollbar().unwrap();
+        assert!(bottom.total > bottom.len, "expected scrollback");
+        assert_eq!(bottom.offset, bottom.total - bottom.len);
+
+        pane.scroll(-3).unwrap();
+        assert_eq!(pane.term().scrollbar().unwrap().offset, bottom.offset - 3);
+
+        pane.scroll_to_live();
+        assert_eq!(pane.term().scrollbar().unwrap().offset, bottom.offset);
+
+        pane.shutdown();
+    }
+
+    #[test]
+    fn detects_mouse_tracking() {
+        let (mut pane, _reader) = Pane::spawn(
+            3,
+            &["/bin/sh".to_string()],
+            None,
+            PaneDims {
+                cols: 20,
+                rows: 5,
+                cell_w: 8,
+                cell_h: 16,
+            },
+        )
+        .unwrap();
+
+        assert!(!pane.tracks_mouse());
+        pane.feed(b"\x1b[?1000h\x1b[?1006h").unwrap();
+        assert!(pane.tracks_mouse());
 
         pane.shutdown();
     }

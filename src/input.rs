@@ -114,7 +114,7 @@ fn kitty(terminal: &Terminal<'_, '_>) -> bool {
         .is_ok_and(|flags| flags.contains(key::KittyKeyFlags::DISAMBIGUATE))
 }
 
-fn mods_from(m: KeyModifiers) -> Mods {
+pub(crate) fn mods_from(m: KeyModifiers) -> Mods {
     let mut mods = Mods::empty();
     if m.contains(KeyModifiers::SHIFT) {
         mods |= Mods::SHIFT;

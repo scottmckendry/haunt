@@ -10,7 +10,7 @@ use std::{
 
 use anyhow::Result;
 use crossterm::{
-    event::{Event, KeyEvent},
+    event::{Event, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind},
     terminal,
 };
 use libghostty_vt::{key, terminal::Mode};
@@ -112,6 +112,7 @@ impl App {
             }
             Msg::PaneEof(id) => self.on_eof(id)?,
             Msg::Input(Event::Key(ev)) => self.on_key(ev)?,
+            Msg::Input(Event::Mouse(ev)) => self.on_mouse(ev)?,
             Msg::Input(Event::Paste(text)) => self.on_paste(text)?,
             Msg::Input(Event::FocusGained) => self.on_outer_focus(true)?,
             Msg::Input(Event::FocusLost) => self.on_outer_focus(false)?,
@@ -119,7 +120,6 @@ impl App {
                 let size = query_size()?;
                 self.resize(size)?;
             }
-            Msg::Input(_) => {}
             Msg::Signal(signal) => {
                 self.exit_code = 128 + signal;
                 self.running = false;
@@ -192,6 +192,10 @@ impl App {
 
     fn on_key(&mut self, ev: KeyEvent) -> Result<()> {
         self.clear_error();
+
+        if ev.kind != KeyEventKind::Release {
+            self.focused_mut().scroll_to_live();
+        }
 
         if let Some(idx) = self.cfg.apps.iter().position(|app| app.chord.matches(&ev)) {
             return self.toggle(idx);
@@ -372,6 +376,81 @@ impl App {
         Ok(())
     }
 
+    fn on_mouse(&mut self, ev: MouseEvent) -> Result<()> {
+        let Some((area, id)) = self.pane_at(ev.column, ev.row) else {
+            return Ok(());
+        };
+
+        // A click focuses the pane under the pointer, whichever pane it is.
+        if matches!(ev.kind, MouseEventKind::Down(_)) {
+            self.focus_pane(id)?;
+        }
+
+        // Shift overrides app mouse capture, as in Ghostty.
+        let tracks = self.pane_mut(id).is_some_and(|pane| pane.tracks_mouse());
+        let local = ev.modifiers.contains(KeyModifiers::SHIFT) || !tracks;
+
+        if local {
+            let delta = match ev.kind {
+                MouseEventKind::ScrollUp => -3,
+                MouseEventKind::ScrollDown => 3,
+                _ => return Ok(()),
+            };
+            if let Some(pane) = self.pane_mut(id) {
+                pane.scroll(delta)?;
+                self.frame_dirty = true;
+            }
+            return Ok(());
+        }
+
+        if let Some(pane) = self.pane_mut(id) {
+            pane.send_mouse(ev, area)?;
+        }
+        Ok(())
+    }
+
+    fn focus_pane(&mut self, id: u64) -> Result<()> {
+        let target = if id == self.main.id {
+            Focus::Main
+        } else if self
+            .visible
+            .is_some_and(|idx| self.aux[idx].as_ref().is_some_and(|pane| pane.id == id))
+        {
+            Focus::Aux
+        } else {
+            return Ok(());
+        };
+
+        if self.focus == target {
+            return Ok(());
+        }
+        let old_id = self.focused_id();
+        self.focus = target;
+        self.focus_changed(old_id)
+    }
+
+    fn pane_at(&self, x: u16, y: u16) -> Option<(Area, u64)> {
+        let visible_size = self.visible.map(|idx| self.cfg.apps[idx].size);
+        let (main_area, aux_area) = layout(self.size, visible_size);
+
+        if let (Some(idx), Some(area)) = (self.visible, aux_area)
+            && contains(area, x, y)
+        {
+            return self.aux[idx].as_ref().map(|pane| (area, pane.id));
+        }
+
+        contains(main_area, x, y).then_some((main_area, self.main.id))
+    }
+
+    fn focused_mut(&mut self) -> &mut Pane {
+        if self.focus == Focus::Aux
+            && let Some(pane) = self.visible.and_then(|idx| self.aux[idx].as_mut())
+        {
+            return pane;
+        }
+        &mut self.main
+    }
+
     fn on_paste(&mut self, text: String) -> Result<()> {
         let bracketed = self.focused().mode(Mode::BRACKETED_PASTE);
         let bytes = paste_bytes(&text, bracketed);
@@ -446,6 +525,13 @@ fn spawn_reader(id: u64, mut reader: Box<dyn Read + Send>, tx: SyncSender<Msg>) 
         }
         let _ = tx.send(Msg::PaneEof(id));
     });
+}
+
+fn contains(area: Area, x: u16, y: u16) -> bool {
+    x >= area.x
+        && x < area.x.saturating_add(area.w)
+        && y >= area.y
+        && y < area.y.saturating_add(area.h)
 }
 
 fn full_area(size: Size) -> Area {
@@ -635,6 +721,15 @@ mod tests {
             hidden_area(size(80, 24), AppSize::Full),
             full_area(size(80, 24))
         );
+    }
+
+    #[test]
+    fn area_contains_checks_bounds() {
+        let area = full_area(size(80, 24));
+        assert!(contains(area, 0, 0));
+        assert!(contains(area, 79, 23));
+        assert!(!contains(area, 80, 23));
+        assert!(!contains(area, 79, 24));
     }
 
     #[test]

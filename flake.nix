@@ -14,10 +14,7 @@
   outputs =
     { self, nixpkgs, ghostty }:
     let
-      systems = [
-        "x86_64-linux"
-        "aarch64-linux"
-      ];
+      systems = [ "x86_64-linux" ];
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
     in
     {

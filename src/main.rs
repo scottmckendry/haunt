@@ -48,6 +48,7 @@ fn run() -> Result<i32> {
         EnterAlternateScreen,
         event::EnableBracketedPaste,
         event::EnableFocusChange,
+        event::EnableMouseCapture,
         cursor::Hide,
         style::ResetColor
     )?;
@@ -124,6 +125,7 @@ impl Drop for Guard {
             event::PopKeyboardEnhancementFlags,
             event::DisableFocusChange,
             event::DisableBracketedPaste,
+            event::DisableMouseCapture,
             cursor::Show,
             style::ResetColor,
             LeaveAlternateScreen
