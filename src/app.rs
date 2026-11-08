@@ -73,6 +73,7 @@ pub struct App {
     click: Option<ClickState>,
     last_autoscroll: Instant,
     pending_writes: Vec<u8>,
+    last_title: Option<String>,
 }
 
 impl App {
@@ -103,6 +104,7 @@ impl App {
             click: None,
             last_autoscroll: Instant::now(),
             pending_writes: Vec::new(),
+            last_title: None,
         })
     }
 
@@ -145,6 +147,7 @@ impl App {
                 self.running = false;
             }
         }
+        self.sync_title();
         Ok(())
     }
 
@@ -633,6 +636,32 @@ impl App {
                 .visible
                 .and_then(|idx| self.aux[idx].as_ref())
                 .is_some_and(|pane| pane.dirty)
+    }
+
+    /// Forward the focused pane's title to the outer terminal.
+    ///
+    /// An unset or cleared pane title emits an empty OSC 2 so a previous
+    /// title is not left stuck on the tab.
+    fn sync_title(&mut self) {
+        let title = match self.focus {
+            Focus::Main => self.main.title(),
+            Focus::Aux => self
+                .visible
+                .and_then(|idx| self.aux[idx].as_ref())
+                .and_then(Pane::title)
+                .or_else(|| self.main.title()),
+        };
+
+        if title == self.last_title {
+            return;
+        }
+
+        self.pending_writes.extend_from_slice(b"\x1b]2;");
+        if let Some(title) = &title {
+            self.pending_writes.extend_from_slice(title.as_bytes());
+        }
+        self.pending_writes.push(0x07);
+        self.last_title = title;
     }
 
     fn set_error(&mut self, error: String) {

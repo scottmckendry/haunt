@@ -112,6 +112,7 @@ pub struct Pane {
     cells_it: CellIterator<'static>,
     paint_state: PaintState,
     responses: Arc<Mutex<Vec<u8>>>,
+    title: Arc<Mutex<Option<String>>>,
     dims: Arc<Mutex<PaneDims>>,
     mouse_encoder: mouse::Encoder<'static>,
     mouse_event: mouse::Event<'static>,
@@ -153,6 +154,7 @@ impl Pane {
 
         let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(writer));
         let responses = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let title = Arc::new(Mutex::new(None::<String>));
         let dims_shared = Arc::new(Mutex::new(dims));
 
         let mut term: Terminal<'static, 'static> = Terminal::new(TerminalOptions {
@@ -169,6 +171,14 @@ impl Pane {
             let responses = Arc::clone(&responses);
             term.on_pty_write(move |_term, data| {
                 responses.lock().unwrap().extend_from_slice(data);
+            })?;
+        }
+        {
+            let current = Arc::clone(&title);
+            term.on_title_changed(move |term| {
+                if let Ok(title) = term.title() {
+                    *current.lock().unwrap() = Some(title.to_string());
+                }
             })?;
         }
         {
@@ -223,6 +233,7 @@ impl Pane {
                 cells_it: CellIterator::new()?,
                 paint_state,
                 responses,
+                title,
                 dims: dims_shared,
                 mouse_encoder: mouse::Encoder::new()?,
                 mouse_event: mouse::Event::new()?,
@@ -270,6 +281,11 @@ impl Pane {
         }
         self.writer.lock().unwrap().write_all(bytes)?;
         Ok(())
+    }
+
+    /// The title set by the inner program, or `None` if it never set one.
+    pub fn title(&self) -> Option<String> {
+        self.title.lock().unwrap().clone()
     }
 
     pub fn resize(&mut self, dims: PaneDims) -> Result<()> {
@@ -671,6 +687,35 @@ mod tests {
             pane.selection_finish().unwrap().as_deref(),
             Some(&b"hello world"[..])
         );
+
+        pane.shutdown();
+    }
+
+    #[test]
+    fn title_changes_are_tracked_including_clearing() {
+        let (mut pane, _reader) = Pane::spawn(
+            6,
+            &["/bin/sh".to_string()],
+            None,
+            PaneDims {
+                cols: 20,
+                rows: 5,
+                cell_w: 8,
+                cell_h: 16,
+            },
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(pane.title(), None);
+
+        pane.feed(b"\x1b]2;hello\x07").unwrap();
+        assert_eq!(pane.title().as_deref(), Some("hello"));
+
+        // A cleared title is distinct from one that was never set, so App can
+        // forward the empty title and clear the tab title.
+        pane.feed(b"\x1b]2;\x07").unwrap();
+        assert_eq!(pane.title().as_deref(), Some(""));
 
         pane.shutdown();
     }
