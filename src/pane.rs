@@ -20,7 +20,7 @@ use libghostty_vt::{
         ScrollViewport, SecondaryDeviceAttributes, SizeReportSize,
     },
 };
-use portable_pty::{Child, MasterPty, PtySize};
+use portable_pty::{MasterPty, PtySize};
 
 use crate::{
     base64,
@@ -113,7 +113,7 @@ pub struct Pane {
     term: Terminal<'static, 'static>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Box<dyn MasterPty + Send>,
-    child: Box<dyn Child + Send + Sync>,
+    child: pty::ChildGuard,
     render_state: RenderState<'static>,
     rows_it: RowIterator<'static>,
     cells_it: CellIterator<'static>,
@@ -129,7 +129,6 @@ pub struct Pane {
     mouse_event: mouse::Event<'static>,
     mouse_down: bool,
     selection: Option<SelectionState>,
-    exited: bool,
     force_full: bool,
     focus_events: bool,
     focus_events_pending: bool,
@@ -273,7 +272,6 @@ impl Pane {
                 mouse_event: mouse::Event::new()?,
                 mouse_down: false,
                 selection: None,
-                exited: false,
                 force_full: true,
                 focus_events: false,
                 focus_events_pending: false,
@@ -669,18 +667,11 @@ impl Pane {
 
     /// Wait for the child to exit and return its status.
     pub fn wait(&mut self) -> Result<i32> {
-        let status = self.child.wait()?;
-        self.exited = true;
-        Ok(status.exit_code() as i32)
+        Ok(self.child.wait()?.exit_code() as i32)
     }
 
     pub fn shutdown(&mut self) {
-        if self.exited {
-            return;
-        }
-        self.exited = true;
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.child.shutdown();
     }
 
     fn flush_responses(&mut self) -> Result<()> {

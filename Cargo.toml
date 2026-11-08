@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1"
 crossterm = "0.29"
+libc = "0.2"
 libghostty-vt = "0.2"
 # Enables the pkg-config probe so Nix builds link Ghostty's own libghostty-vt
 # derivation instead of compiling the vendored source.
