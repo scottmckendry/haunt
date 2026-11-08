@@ -59,6 +59,8 @@ pub fn draw<'a>(
     let mut row_iter = row_it.update(snapshot)?;
     let mut last_sgr: Option<Sgr> = None;
     let mut last_uri: Option<String> = None;
+    let mut text = String::new();
+    let mut chars = Vec::new();
     let mut y = 0u16;
 
     while let Some(row) = row_iter.next() {
@@ -109,7 +111,7 @@ pub fn draw<'a>(
                 last_uri = uri;
             }
 
-            let mut text = String::new();
+            text.clear();
             cell.graphemes_utf8(&mut text)?;
             if placeholder {
                 // The third diacritic carries the high 8 bits of the inner
@@ -123,7 +125,8 @@ pub fn draw<'a>(
                 text.push(' ');
             }
 
-            let chars: Vec<char> = text.chars().collect();
+            chars.clear();
+            chars.extend(text.chars());
             let (_, width) = unicode::grapheme_width(&chars);
             let width = width.max(1) as u16;
 
@@ -435,6 +438,27 @@ mod tests {
             .unwrap();
         let selection = Selection::new(start, end, false);
         term.set_selection(Some(&selection)).unwrap();
+    }
+
+    #[test]
+    fn mixed_graphemes_do_not_leak_between_cells() {
+        let term = term_with("A字e\u{301}Z".as_bytes());
+        let mut render_state = RenderState::new().unwrap();
+        let mut rows = RowIterator::new().unwrap();
+        let mut cells = CellIterator::new().unwrap();
+        let mut out = Vec::new();
+        draw_term(
+            &term,
+            &mut render_state,
+            &mut rows,
+            &mut cells,
+            &PaintState::default(),
+            &mut out,
+        )
+        .unwrap();
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.contains("A字"), "{text:?}");
+        assert!(text.contains("e\u{301}Z"), "{text:?}");
     }
 
     #[test]
