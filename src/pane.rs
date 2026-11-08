@@ -26,6 +26,7 @@ use crate::{
     input,
     paint::{self, Area, PaintState},
     pty,
+    theme::Theme,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,6 +130,7 @@ impl Pane {
         cmd: &[String],
         cwd: Option<&std::path::Path>,
         dims: PaneDims,
+        theme: Option<Theme>,
     ) -> Result<(Self, Box<dyn Read + Send>)> {
         let (program, args) = cmd
             .split_first()
@@ -158,6 +160,9 @@ impl Pane {
             rows: dims.rows,
             max_scrollback: 10_000,
         })?;
+        if let Some(theme) = theme {
+            theme.apply(&mut term)?;
+        }
         term.resize(dims.cols, dims.rows, dims.cell_w as u32, dims.cell_h as u32)?;
 
         {
@@ -198,6 +203,13 @@ impl Pane {
             })
         })?;
         term.on_xtversion(|_term| Some(outer_terminal_identity()))?;
+        term.on_color_scheme(move |_term| theme.and_then(Theme::scheme))?;
+
+        let mut paint_state = PaintState::default();
+        if let Some(theme) = theme {
+            paint_state.selection_fg = theme.selection_fg;
+            paint_state.selection_bg = theme.selection_bg;
+        }
 
         Ok((
             Self {
@@ -209,7 +221,7 @@ impl Pane {
                 render_state: RenderState::new()?,
                 rows_it: RowIterator::new()?,
                 cells_it: CellIterator::new()?,
-                paint_state: PaintState::default(),
+                paint_state,
                 responses,
                 dims: dims_shared,
                 mouse_encoder: mouse::Encoder::new()?,
@@ -614,6 +626,7 @@ mod tests {
                 cell_w: 8,
                 cell_h: 16,
             },
+            None,
         )
         .unwrap();
         pane.feed(b"hello world\r\nsecond line\r\n").unwrap();
@@ -674,6 +687,7 @@ mod tests {
                 cell_w: 8,
                 cell_h: 16,
             },
+            None,
         )
         .unwrap();
 
@@ -702,6 +716,7 @@ mod tests {
                 cell_w: 8,
                 cell_h: 16,
             },
+            None,
         )
         .unwrap();
 
@@ -734,6 +749,7 @@ mod tests {
                 cell_w: 8,
                 cell_h: 16,
             },
+            None,
         )
         .unwrap();
 
@@ -763,6 +779,7 @@ mod tests {
                 cell_w: 8,
                 cell_h: 16,
             },
+            None,
         )
         .unwrap();
 

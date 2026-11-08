@@ -12,6 +12,7 @@ mod paint;
 mod pane;
 mod pty;
 mod shell;
+mod theme;
 
 use std::{io::Write, process::ExitCode, sync::mpsc::RecvTimeoutError, thread};
 
@@ -39,6 +40,7 @@ fn main() -> ExitCode {
 fn run() -> Result<i32> {
     let cfg = config::Config::load()?;
     let size = app::query_size()?;
+    let theme = theme::Theme::load();
 
     terminal::enable_raw_mode()?;
     let _guard = Guard;
@@ -63,7 +65,7 @@ fn run() -> Result<i32> {
     )?;
 
     let (tx, rx) = app::channel();
-    let mut app = App::new(cfg, size, tx.clone())?;
+    let mut app = App::new(cfg, size, theme, tx.clone())?;
 
     {
         // Outer terminal input -> the main pane.

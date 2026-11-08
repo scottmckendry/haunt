@@ -21,6 +21,7 @@ use crate::{
     input,
     paint::Area,
     pane::{Pane, PaneDims, SelectKind},
+    theme::Theme,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +54,7 @@ struct ClickState {
 
 pub struct App {
     cfg: Config,
+    theme: Option<Theme>,
     main: Pane,
     aux: Vec<Option<Pane>>,
     visible: Option<usize>,
@@ -74,13 +76,15 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(cfg: Config, size: Size, tx: SyncSender<Msg>) -> Result<Self> {
-        let (main, reader) = Pane::spawn(0, &cfg.shell, None, dims_of(size, full_area(size)))?;
+    pub fn new(cfg: Config, size: Size, theme: Option<Theme>, tx: SyncSender<Msg>) -> Result<Self> {
+        let (main, reader) =
+            Pane::spawn(0, &cfg.shell, None, dims_of(size, full_area(size)), theme)?;
         spawn_reader(0, reader, tx.clone());
         let aux = (0..cfg.apps.len()).map(|_| None).collect();
 
         Ok(Self {
             cfg,
+            theme,
             main,
             aux,
             visible: None,
@@ -332,7 +336,7 @@ impl App {
             let cwd = self.main.cwd();
             let id = self.next_id;
 
-            match Pane::spawn(id, &cmd, cwd.as_deref(), dims) {
+            match Pane::spawn(id, &cmd, cwd.as_deref(), dims, self.theme) {
                 Ok((pane, reader)) => {
                     self.next_id += 1;
                     self.aux[idx] = Some(pane);
