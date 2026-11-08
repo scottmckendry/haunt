@@ -27,6 +27,7 @@ pub fn draw<'a>(
     cell_it: &mut CellIterator<'a>,
     out: &mut Vec<u8>,
     area: Area,
+    force: bool,
 ) -> Result<()> {
     if area.w == 0 || area.h == 0 {
         return Ok(());
@@ -40,7 +41,7 @@ pub fn draw<'a>(
         if y >= area.h {
             break;
         }
-        if !row.dirty()? {
+        if !force && !row.dirty()? {
             y += 1;
             continue;
         }
@@ -275,7 +276,7 @@ mod tests {
         out: &mut Vec<u8>,
     ) -> Result<()> {
         let snapshot = render_state.update(term)?;
-        draw(&snapshot, rows, cells, out, area(20, 4))
+        draw(&snapshot, rows, cells, out, area(20, 4), false)
     }
 
     #[test]

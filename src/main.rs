@@ -5,6 +5,7 @@
 //! native features.
 
 mod app;
+mod config;
 mod input;
 mod paint;
 mod pane;
@@ -35,7 +36,7 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<i32> {
-    let shell = shell::default_shell();
+    let cfg = config::Config::load()?;
     let size = app::query_size()?;
 
     terminal::enable_raw_mode()?;
@@ -50,7 +51,7 @@ fn run() -> Result<i32> {
     )?;
 
     let (tx, rx) = app::channel();
-    let mut app = App::new(&shell, size, tx.clone())?;
+    let mut app = App::new(cfg, size, tx.clone())?;
 
     {
         // Outer terminal input -> the main pane.

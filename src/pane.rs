@@ -3,6 +3,7 @@
 use std::{
     env,
     io::{Read, Write},
+    path::PathBuf,
     sync::{Arc, Mutex, OnceLock},
 };
 
@@ -80,6 +81,7 @@ fn outer_terminal_identity() -> &'static str {
 }
 
 pub struct Pane {
+    pub id: u64,
     term: Terminal<'static, 'static>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Box<dyn MasterPty + Send>,
@@ -90,11 +92,13 @@ pub struct Pane {
     responses: Arc<Mutex<Vec<u8>>>,
     dims: Arc<Mutex<PaneDims>>,
     exited: bool,
+    force_full: bool,
     pub dirty: bool,
 }
 
 impl Pane {
     pub fn spawn(
+        id: u64,
         cmd: &[String],
         cwd: Option<&std::path::Path>,
         dims: PaneDims,
@@ -170,6 +174,7 @@ impl Pane {
 
         Ok((
             Self {
+                id,
                 term,
                 writer,
                 master,
@@ -180,6 +185,7 @@ impl Pane {
                 responses,
                 dims: dims_shared,
                 exited: false,
+                force_full: true,
                 dirty: true,
             },
             reader,
@@ -218,16 +224,39 @@ impl Pane {
         Ok(())
     }
 
-    pub fn paint(&mut self, out: &mut Vec<u8>, area: Area) -> Result<()> {
+    pub fn paint(&mut self, out: &mut Vec<u8>, area: Area, focused: bool) -> Result<()> {
         let snapshot = self.render_state.update(&self.term)?;
-        paint::draw(&snapshot, &mut self.rows_it, &mut self.cells_it, out, area)?;
-        paint::draw_cursor(&snapshot, out, area)?;
+        paint::draw(
+            &snapshot,
+            &mut self.rows_it,
+            &mut self.cells_it,
+            out,
+            area,
+            self.force_full,
+        )?;
+        if focused {
+            paint::draw_cursor(&snapshot, out, area)?;
+        }
+        self.force_full = false;
         self.dirty = false;
         Ok(())
     }
 
+    /// Repaint every row on the next paint, ignoring dirty tracking.
+    pub fn force_repaint(&mut self) {
+        self.force_full = true;
+        self.dirty = true;
+    }
+
     pub fn term(&self) -> &Terminal<'static, 'static> {
         &self.term
+    }
+
+    /// The working directory of the pane's current foreground process.
+    pub fn cwd(&self) -> Option<PathBuf> {
+        let pgid = self.master.process_group_leader()?;
+        let path = std::fs::read_link(format!("/proc/{pgid}/cwd")).ok()?;
+        path.is_dir().then_some(path)
     }
 
     /// Wait for the child to exit and return its status.

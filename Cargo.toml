@@ -11,4 +11,6 @@ libghostty-vt = "0.2"
 # derivation instead of compiling the vendored source.
 libghostty-vt-sys = { version = "0.2", features = ["pkg-config"] }
 portable-pty = "0.9"
+serde = { version = "1", features = ["derive"] }
 signal-hook = "0.3"
+toml = "0.9"
