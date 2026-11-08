@@ -133,6 +133,7 @@ pub struct AppConfig {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub shell: Vec<String>,
+    pub separator: char,
     pub apps: Vec<AppConfig>,
 }
 
@@ -158,6 +159,17 @@ impl Config {
         if shell.is_empty() || shell[0].is_empty() {
             bail!("`shell` must not be empty");
         }
+
+        let separator = raw.separator.unwrap_or_else(|| " ".into());
+        let mut chars = separator.chars();
+        let separator = match (chars.next(), chars.next()) {
+            (Some(c), None)
+                if !c.is_control() && libghostty_vt::unicode::grapheme_width(&[c]).1 == 1 =>
+            {
+                c
+            }
+            _ => bail!("`separator` must be a single printable, one-cell character"),
+        };
 
         let mut apps = Vec::with_capacity(raw.app.len());
         let mut seen_binds: Vec<(Chord, String)> = Vec::new();
@@ -191,7 +203,11 @@ impl Config {
             });
         }
 
-        Ok(Self { shell, apps })
+        Ok(Self {
+            shell,
+            separator,
+            apps,
+        })
     }
 
     fn builtin() -> Self {
@@ -208,7 +224,11 @@ impl Config {
             builtin_app("term", "ctrl+alt+space", shell.clone(), AppSize::Half),
         ];
 
-        Self { shell, apps }
+        Self {
+            shell,
+            separator: ' ',
+            apps,
+        }
     }
 }
 
@@ -234,6 +254,8 @@ fn config_path() -> PathBuf {
 struct RawConfig {
     #[serde(default)]
     shell: Option<Vec<String>>,
+    #[serde(default)]
+    separator: Option<String>,
     #[serde(default)]
     app: Vec<RawApp>,
 }
@@ -346,6 +368,17 @@ mod tests {
         assert_eq!(cfg.shell, ["nu", "-l"]);
         assert_eq!(cfg.apps.len(), 2);
         assert_eq!(cfg.apps[1].size, AppSize::Full);
+    }
+
+    #[test]
+    fn separator_defaults_to_space_and_accepts_one_cell() {
+        assert_eq!(Config::builtin().separator, ' ');
+        assert_eq!(Config::parse("").unwrap().separator, ' ');
+        assert_eq!(Config::parse("separator = '│'").unwrap().separator, '│');
+        for value in ["", "ab", "界", "\u{301}", "\u{1b}"] {
+            let input = format!("separator = {}", toml::Value::String(value.into()));
+            assert!(Config::parse(&input).is_err(), "accepted {value:?}");
+        }
     }
 
     #[test]

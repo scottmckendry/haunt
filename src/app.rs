@@ -208,6 +208,10 @@ impl App {
         };
         self.graphics.begin_frame(&visible, &mut frame);
 
+        if visible_size == Some(AppSize::Half) && self.size.cols >= 3 {
+            paint_separator(&mut frame, main_area.w, self.size.rows, self.cfg.separator);
+        }
+
         match (self.visible, self.focus, full_aux) {
             (Some(v), _, true) => {
                 if let Some(pane) = self.aux[v].as_mut() {
@@ -862,8 +866,9 @@ fn layout(size: Size, visible: Option<AppSize>) -> (Area, Option<Area>) {
     let full = full_area(size);
     match visible {
         Some(AppSize::Half) => {
-            let main_w = size.cols / 2;
-            let aux_w = size.cols - main_w;
+            let gap = u16::from(size.cols >= 3);
+            let main_w = (size.cols - gap) / 2;
+            let aux_w = size.cols - gap - main_w;
             (
                 Area {
                     x: 0,
@@ -872,7 +877,7 @@ fn layout(size: Size, visible: Option<AppSize>) -> (Area, Option<Area>) {
                     h: size.rows,
                 },
                 Some(Area {
-                    x: main_w,
+                    x: main_w + gap,
                     y: 0,
                     w: aux_w,
                     h: size.rows,
@@ -886,16 +891,22 @@ fn layout(size: Size, visible: Option<AppSize>) -> (Area, Option<Area>) {
 
 fn hidden_area(size: Size, app_size: AppSize) -> Area {
     match app_size {
-        AppSize::Half => {
-            let main_w = size.cols / 2;
-            Area {
-                x: main_w,
-                y: 0,
-                w: size.cols - main_w,
-                h: size.rows,
-            }
-        }
+        AppSize::Half => layout(size, Some(AppSize::Half)).1.expect("half area"),
         AppSize::Full => full_area(size),
+    }
+}
+
+fn paint_separator(out: &mut Vec<u8>, x: u16, rows: u16, separator: char) {
+    out.extend_from_slice(b"\x1b[0m\x1b]8;;\x1b\\");
+    for y in 0..rows {
+        write!(
+            out,
+            "\x1b[{};{}H{}",
+            u32::from(y) + 1,
+            u32::from(x) + 1,
+            separator
+        )
+        .expect("writing to a Vec cannot fail");
     }
 }
 
@@ -1021,7 +1032,7 @@ mod tests {
             Area {
                 x: 0,
                 y: 0,
-                w: 40,
+                w: 39,
                 h: 24
             }
         );
@@ -1088,10 +1099,23 @@ mod tests {
     }
 
     #[test]
-    fn odd_widths_give_the_extra_column_to_the_aux() {
+    fn split_accounts_for_separator_and_narrow_terminals() {
         let (main, aux) = layout(size(81, 24), Some(AppSize::Half));
         assert_eq!(main.w, 40);
-        assert_eq!(aux.unwrap().w, 41);
+        assert_eq!(aux.unwrap().w, 40);
+        let (main, aux) = layout(size(2, 24), Some(AppSize::Half));
+        assert_eq!(main.w, 1);
+        assert_eq!(aux.unwrap().x, 1);
+    }
+
+    #[test]
+    fn separator_uses_default_style_and_each_row() {
+        let mut frame = Vec::new();
+        paint_separator(&mut frame, 39, 2, '│');
+        assert_eq!(
+            frame,
+            "\x1b[0m\x1b]8;;\x1b\\\x1b[1;40H│\x1b[2;40H│".as_bytes()
+        );
     }
 
     #[test]
