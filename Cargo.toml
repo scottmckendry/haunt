@@ -2,3 +2,13 @@
 name = "haunt"
 version = "0.1.0"
 edition = "2024"
+
+[dependencies]
+anyhow = "1"
+crossterm = "0.29"
+libghostty-vt = "0.2"
+# Enables the pkg-config probe so Nix builds link Ghostty's own libghostty-vt
+# derivation instead of compiling the vendored source.
+libghostty-vt-sys = { version = "0.2", features = ["pkg-config"] }
+portable-pty = "0.9"
+signal-hook = "0.3"
