@@ -47,7 +47,7 @@ fn run() -> Result<i32> {
             libghostty_vt::kitty::graphics::RustPngDecoder::new(),
         )))?
     };
-    let cfg = config::Config::load()?;
+    let (cfg, config_error) = startup_config(config::Config::load());
     let size = app::query_size()?;
     let theme = theme::Theme::load();
 
@@ -75,6 +75,9 @@ fn run() -> Result<i32> {
 
     let (tx, rx) = app::channel();
     let mut app = App::new(cfg, size, theme, tx.clone())?;
+    if let Some(error) = config_error {
+        app.set_error(error);
+    }
 
     {
         // Outer terminal input -> the main pane.
@@ -123,6 +126,35 @@ fn run() -> Result<i32> {
 
     app.shutdown();
     Ok(app.exit_code())
+}
+
+fn startup_config(result: Result<config::Config>) -> (config::Config, Option<String>) {
+    match result {
+        Ok(cfg) => (cfg, None),
+        Err(err) => (
+            config::Config::parse("").expect("default configuration is valid"),
+            Some(format!("config load failed: {err:#}")),
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_config_uses_defaults_and_reports_errors() {
+        for text in ["shell = [", "reload_bind = 'bad+key'"] {
+            let (cfg, error) = startup_config(config::Config::parse(text));
+            assert_eq!(cfg.reload_bind.to_string(), "ctrl+shift+r");
+            assert_eq!(cfg.separator, ' ');
+            assert!(cfg.apps.is_empty());
+            assert!(error.unwrap().contains("config load failed:"));
+        }
+        let (cfg, error) = startup_config(config::Config::parse("separator = '|'"));
+        assert_eq!(cfg.separator, '|');
+        assert!(error.is_none());
+    }
 }
 
 struct Guard;

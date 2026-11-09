@@ -861,7 +861,7 @@ impl App {
             .extend_from_slice(&osc7_sequence(&self.hostname, &cwd));
     }
 
-    fn set_error(&mut self, error: String) {
+    pub(crate) fn set_error(&mut self, error: String) {
         self.push_notification(NotificationKind::Error(error));
     }
 
