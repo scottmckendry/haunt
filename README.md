@@ -31,6 +31,19 @@ Press a binding to start and show its app; press it again to hide it. Only one a
 
 A half-size app appears to the right of the main pane; a full-size app covers it. Click a pane to focus it.
 
+Press `ctrl+shift+h` to show a help screen with your configured apps and bindings. Press `ctrl+shift+r` to reload the configuration.
+
+<table align="center">
+    <tr>
+        <td>
+            <img width="691" height="477" alt="1794249422461967403" src="https://github.com/user-attachments/assets/ecf80659-f4cc-44cf-b3e0-f7f224adad60" />
+        </td>
+        <td>
+            <img width="691" height="478" alt="1794249429885658340" src="https://github.com/user-attachments/assets/c82d63f5-30e6-4857-bba3-7708c7a810cc" />
+        </td>
+    </tr>
+</table>
+
 ## configuration
 
 Create `~/.config/haunt/config.toml` (or `$XDG_CONFIG_HOME/haunt/config.toml` when `XDG_CONFIG_HOME` is absolute):
@@ -38,8 +51,10 @@ Create `~/.config/haunt/config.toml` (or `$XDG_CONFIG_HOME/haunt/config.toml` wh
 ```toml
 # Optional; defaults to your account shell, then $SHELL, then /bin/sh.
 shell = ["nu", "-l"]
-# Optional; defaults to ctrl+shift+r. Must not conflict with an app binding.
+# Optional; defaults to ctrl+shift+r. Must not conflict with other bindings.
 reload_bind = "ctrl+shift+r"
+# Optional; defaults to ctrl+shift+h.
+help_bind = "ctrl+shift+h"
 # Optional; defaults to a space. Must be one printable, one-cell character.
 separator = "│"
 

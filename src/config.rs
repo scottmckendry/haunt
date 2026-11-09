@@ -136,6 +136,27 @@ impl Chord {
     }
 }
 
+impl std::fmt::Display for Chord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (modifier, name) in [
+            (KeyModifiers::CONTROL, "ctrl+"),
+            (KeyModifiers::ALT, "alt+"),
+            (KeyModifiers::SHIFT, "shift+"),
+            (KeyModifiers::SUPER, "super+"),
+        ] {
+            if self.mods.contains(modifier) {
+                write!(f, "{name}")?;
+            }
+        }
+        match self.key {
+            KeyCode::Char(' ') => write!(f, "space"),
+            KeyCode::Char(c) => write!(f, "{c}"),
+            KeyCode::F(n) => write!(f, "f{n}"),
+            key => write!(f, "{}", format!("{key:?}").to_ascii_lowercase()),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub name: String,
@@ -147,6 +168,7 @@ pub struct AppConfig {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub reload_bind: Chord,
+    pub help_bind: Option<Chord>,
     pub shell: Vec<String>,
     pub separator: char,
     pub apps: Vec<AppConfig>,
@@ -219,6 +241,17 @@ impl Config {
 
         let reload_bind = Chord::parse(raw.reload_bind.as_deref().unwrap_or("ctrl+shift+r"))
             .context("invalid reload_bind")?;
+        let explicit_help = raw.help_bind.is_some();
+        let mut help_bind = Some(
+            Chord::parse(raw.help_bind.as_deref().unwrap_or("ctrl+shift+h"))
+                .context("invalid help_bind")?,
+        );
+        if help_bind == Some(reload_bind) {
+            if explicit_help {
+                bail!("help and reload bindings conflict");
+            }
+            help_bind = None;
+        }
         let mut apps = Vec::with_capacity(raw.app.len());
         let mut seen_binds: Vec<(Chord, String)> = Vec::new();
         let mut seen_names: Vec<String> = Vec::new();
@@ -241,6 +274,12 @@ impl Config {
             if chord == reload_bind {
                 bail!("app {:?} shares the reload binding", raw_app.name);
             }
+            if Some(chord) == help_bind {
+                if explicit_help {
+                    bail!("app {:?} shares the help binding", raw_app.name);
+                }
+                help_bind = None;
+            }
             if let Some((_, other)) = seen_binds.iter().find(|(c, _)| *c == chord) {
                 bail!(
                     "apps {:?} and {:?} share the same bind {:?}",
@@ -261,6 +300,7 @@ impl Config {
 
         Ok(Self {
             reload_bind,
+            help_bind,
             shell,
             separator,
             apps,
@@ -292,6 +332,8 @@ struct RawConfig {
     #[serde(default)]
     reload_bind: Option<String>,
     #[serde(default)]
+    help_bind: Option<String>,
+    #[serde(default)]
     shell: Option<Vec<String>>,
     #[serde(default)]
     separator: Option<String>,
@@ -313,6 +355,31 @@ struct RawApp {
 mod tests {
     use super::*;
     use crossterm::event::KeyEventKind;
+
+    #[test]
+    fn help_binding_is_configurable_and_cannot_conflict() {
+        let cfg = Config::parse("help_bind = 'alt+f1'").unwrap();
+        assert_eq!(cfg.help_bind.unwrap().to_string(), "alt+f1");
+        assert!(Config::parse("help_bind = 'ctrl+shift+r'").is_err());
+        assert!(
+            Config::parse(
+                "help_bind='ctrl+shift+h'\n[[app]]\nname='a'\nbind='ctrl+shift+h'\ncmd=['a']"
+            )
+            .is_err()
+        );
+        assert!(
+            Config::parse("[[app]]\nname='a'\nbind='ctrl+shift+h'\ncmd=['a']")
+                .unwrap()
+                .help_bind
+                .is_none()
+        );
+        assert!(
+            Config::parse("reload_bind='ctrl+shift+h'")
+                .unwrap()
+                .help_bind
+                .is_none()
+        );
+    }
 
     fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
         KeyEvent::new_with_kind(code, mods, KeyEventKind::Press)
