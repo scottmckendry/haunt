@@ -104,7 +104,6 @@ pub struct App {
 
 impl App {
     pub fn new(cfg: Config, size: Size, theme: Option<Theme>, tx: SyncSender<Msg>) -> Result<Self> {
-        // Install the PNG decoder before the first pane can receive graphics.
         let graphics = Graphics::new()?;
         let (main, reader) =
             Pane::spawn(0, &cfg.shell, None, dims_of(size, full_area(size)), theme)?;

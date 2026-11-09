@@ -87,4 +87,4 @@ nix build
 ./result/bin/haunt
 ```
 
-Alternatively, enter `nix develop` and run `cargo run` or `cargo build --release`. Outside the Nix shell, building needs Rust and either a discoverable libghostty-vt via pkg-config or Zig 0.15.x to build the vendored library.
+Alternatively, enter `nix develop` and run `cargo run` or `cargo build --release`. Outside the Nix shell, building needs Rust and either a compatible libghostty-vt 1.0 via pkg-config or Zig 0.17.x to build the pinned upstream source. The bindings prefer any library found by pkg-config without checking its version: remove older libghostty-vt installations from the pkg-config search path before building.

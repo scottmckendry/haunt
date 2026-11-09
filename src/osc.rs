@@ -1,5 +1,7 @@
-//! Small streaming OSC scanner for effects `libghostty-vt` does not expose
-//! through its C API (progress reports and desktop notifications).
+//! Small streaming OSC scanner for progress reports and notifications.
+//!
+//! libghostty-vt exposes callbacks for these effects, but they normalize the
+//! notification payload. We forward the original OSC sequence verbatim.
 //!
 //! This is deliberately not a general OSC parser: it recognizes only OSC 9;4
 //! (ConEmu progress), OSC 9 messages, and OSC 777 notify. Everything else is

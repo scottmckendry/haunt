@@ -14,10 +14,7 @@ use std::collections::HashMap;
 use anyhow::Result;
 use libghostty_vt::{
     Terminal,
-    alloc::{Allocator, Bytes},
-    kitty::graphics::{
-        self, DecodePng, DecodedImage, Image, ImageFormat, PlacementIterator, PlacementRenderInfo,
-    },
+    kitty::graphics::{Image, ImageFormat, PlacementIterator, PlacementRenderInfo},
 };
 
 use crate::{base64, paint::Area};
@@ -73,9 +70,6 @@ struct PlacementSig {
 
 impl Graphics {
     pub fn new() -> Result<Self> {
-        // libghostty only accepts PNG payloads through a caller-supplied
-        // decoder. Install one before any pane can receive graphics.
-        graphics::set_png_decoder(Some(Box::new(PngDecoder::default())))?;
         Ok(Self {
             next_id: 1,
             panes: HashMap::new(),
@@ -141,7 +135,9 @@ impl Graphics {
             return Ok(false);
         }
 
-        let storage = term.kitty_graphics()?;
+        let Some(storage) = term.kitty_graphics()? else {
+            return Ok(false);
+        };
         // A zero generation means the storage has never been mutated, so
         // there is nothing to forward yet.
         if storage.generation()? == 0 {
@@ -162,6 +158,10 @@ impl Graphics {
             let Some(image) = storage.image(inner_id) else {
                 continue;
             };
+            // v1 can expose an image while its pixels are still loading.
+            if image.data()?.is_none() {
+                continue;
+            }
 
             if !seen.contains(&inner_id) {
                 seen.push(inner_id);
@@ -457,7 +457,9 @@ fn transmit(out: &mut Vec<u8>, id: u32, image: &Image<'_>) -> Result<()> {
 }
 
 fn rgba(image: &Image<'_>) -> Result<Vec<u8>> {
-    let data = image.data()?;
+    let Some(data) = image.data()? else {
+        return Ok(Vec::new());
+    };
     let pixels = u64::from(image.width()?) * u64::from(image.height()?);
     let mut out = Vec::with_capacity((pixels * 4) as usize);
 
@@ -497,54 +499,13 @@ fn delete(out: &mut Vec<u8>, action: char, image_id: u32) {
     out.extend_from_slice(format!("\x1b_Ga=d,d={action},i={image_id},q=2\x1b\\").as_bytes());
 }
 
-#[derive(Default)]
-struct PngDecoder {
-    buf: Vec<u8>,
-}
-
-impl DecodePng for PngDecoder {
-    fn decode_png<'alloc>(
-        &mut self,
-        alloc: &'alloc Allocator<'_>,
-        data: &[u8],
-    ) -> Option<DecodedImage<'alloc>> {
-        use png::{Decoder, Transformations};
-        use std::io::Cursor;
-
-        let mut decoder = Decoder::new(Cursor::new(data));
-        // libghostty wants RGBA8. Expand palettes/grayscale to alpha and strip
-        // 16-bit samples.
-        decoder.set_transformations(Transformations::ALPHA | Transformations::STRIP_16);
-
-        let mut frame = decoder.read_info().ok()?;
-        let size = frame.output_buffer_size()?;
-        self.buf.resize(size, 0);
-        let info = frame.next_frame(&mut self.buf).ok()?;
-
-        let mut bytes = Bytes::new_with_alloc(alloc, info.buffer_size()).ok()?;
-        bytes.copy_from_slice(&self.buf[..info.buffer_size()]);
-        frame.finish().ok()?;
-
-        Some(DecodedImage {
-            width: info.width,
-            height: info.height,
-            data: bytes,
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libghostty_vt::{TerminalOptions, terminal::Terminal};
+    use libghostty_vt::terminal::Terminal;
 
     fn terminal() -> Terminal<'static, 'static> {
-        let mut term = Terminal::new(TerminalOptions {
-            cols: 20,
-            rows: 10,
-            max_scrollback: 0,
-        })
-        .unwrap();
+        let mut term = Terminal::new(20, 10).unwrap();
         term.resize(20, 10, 8, 16).unwrap();
         term.set_kitty_image_storage_limit(1024 * 1024).unwrap();
         term
@@ -656,7 +617,7 @@ mod tests {
     }
 
     #[test]
-    fn changing_image_data_replaces_placements() {
+    fn replacing_image_data_drops_old_placements() {
         let mut term = terminal();
         term.vt_write(b"\x1b_Ga=t,f=24,s=1,v=1,i=7;/wAA\x1b\\\x1b_Ga=p,i=7\x1b\\");
 
@@ -667,26 +628,30 @@ mod tests {
             .unwrap();
         out.clear();
 
-        // Same image ID with new pixel data: the outer placement must be
-        // rebuilt because replacing image data can drop it.
+        // v1 drops the old placement when an image is retransmitted without
+        // a new placement, so the forwarded image must be deleted too.
         term.vt_write(b"\x1b_Ga=t,f=24,s=1,v=1,i=7;AP8A\x1b\\");
         graphics
             .draw_pane(1, &term, &mut out, area(0, 0, 20, 10))
             .unwrap();
         let text = String::from_utf8_lossy(&out);
-        assert!(text.contains("a=t,f=32,s=1,v=1,i=1"), "{text:?}");
-        assert!(text.contains("a=d,d=i,i=1"), "{text:?}");
-        assert!(text.contains("a=p,i=1"), "{text:?}");
+        assert!(text.contains("a=d,d=I,i=1"), "{text:?}");
+
+        // A subsequent placement forwards the replacement pixels again.
+        out.clear();
+        term.vt_write(b"\x1b_Ga=p,i=7\x1b\\");
+        graphics
+            .draw_pane(1, &term, &mut out, area(0, 0, 20, 10))
+            .unwrap();
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.contains("a=t,f=32,s=1,v=1,i=2"), "{text:?}");
+        assert!(text.contains("AP8A/w=="), "{text:?}");
+        assert!(text.contains("a=p,i=2"), "{text:?}");
     }
 
     #[test]
     fn clipping_crops_a_placement_at_the_pane_edge() {
-        let mut term = Terminal::new(TerminalOptions {
-            cols: 20,
-            rows: 10,
-            max_scrollback: 0,
-        })
-        .unwrap();
+        let mut term = Terminal::new(20, 10).unwrap();
         term.resize(20, 10, 1, 1).unwrap();
         term.set_kitty_image_storage_limit(1024 * 1024).unwrap();
 
@@ -710,7 +675,25 @@ mod tests {
 
     #[test]
     fn png_decoder_is_installed() {
-        let _graphics = Graphics::new().unwrap();
+        // The global hook must be installed before any concurrent libghostty
+        // calls. Run this test in a separate, single-test process.
+        const CHILD: &str = "HAUNT_PNG_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "graphics::tests::png_decoder_is_installed"])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        // SAFETY: this subprocess runs only this test, before creating terminals.
+        unsafe {
+            libghostty_vt::kitty::graphics::set_png_decoder(Some(Box::new(
+                libghostty_vt::kitty::graphics::RustPngDecoder::new(),
+            )))
+        }
+        .unwrap();
         let mut term = terminal();
         // 1x1 PNG from the libghostty-vt documentation.
         term.vt_write(
@@ -719,7 +702,7 @@ mod tests {
               DUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==\
               \x1b\\",
         );
-        let storage = term.kitty_graphics().unwrap();
+        let storage = term.kitty_graphics().unwrap().unwrap();
         let image = storage.image(9).expect("PNG should be decoded");
         assert_eq!(image.format().unwrap(), ImageFormat::Rgba);
         assert_eq!((image.width().unwrap(), image.height().unwrap()), (1, 1));
@@ -729,7 +712,7 @@ mod tests {
     fn rgb_and_gray_convert_to_rgba() {
         let mut term = terminal();
         term.vt_write(b"\x1b_Ga=t,f=24,s=1,v=2,i=1;/wAA/wAA\x1b\\");
-        let storage = term.kitty_graphics().unwrap();
+        let storage = term.kitty_graphics().unwrap().unwrap();
         let image = storage.image(1).unwrap();
         assert_eq!(rgba(&image).unwrap(), [255, 0, 0, 255, 255, 0, 0, 255]);
     }

@@ -200,15 +200,10 @@ palette = 15=#ffffff
     fn inner_queries_answer_with_the_theme() {
         use std::sync::{Arc, Mutex};
 
-        use libghostty_vt::{Terminal, TerminalOptions};
+        use libghostty_vt::Terminal;
 
         let theme = Theme::parse("background = #16181a\npalette = 1=#e8796f\n");
-        let mut term = Terminal::new(TerminalOptions {
-            cols: 10,
-            rows: 2,
-            max_scrollback: 0,
-        })
-        .unwrap();
+        let mut term = Terminal::new(10, 2).unwrap();
         let responses = Arc::new(Mutex::new(Vec::<u8>::new()));
         {
             let responses = Arc::clone(&responses);

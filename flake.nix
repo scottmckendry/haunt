@@ -6,13 +6,17 @@
 
     # Must match GHOSTTY_COMMIT in libghostty-vt-sys's build.rs.
     ghostty = {
-      url = "github:ghostty-org/ghostty/a887df42c56f6de86c0fe6da9c4eeca37931e083";
+      url = "github:ghostty-org/ghostty/0fa3d577a5614150ff8e2c152de5fb9d5c6d2dec";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
   outputs =
-    { self, nixpkgs, ghostty }:
+    {
+      self,
+      nixpkgs,
+      ghostty,
+    }:
     let
       systems = [ "x86_64-linux" ];
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
@@ -28,7 +32,10 @@
             pname = "haunt";
             version = "0.1.0";
             src = ./.;
-            cargoLock.lockFile = ./Cargo.lock;
+            cargoLock = {
+              lockFile = ./Cargo.lock;
+              outputHashes."libghostty-vt-0.2.1" = "sha256-7KbO3Be+DWUvQnSLEksGVzNOKVieBhBqR4hbkoQtK6c=";
+            };
 
             nativeBuildInputs = [ pkgs.pkg-config ];
             buildInputs = [ ghosttyLib ];
@@ -57,10 +64,7 @@
               rust-analyzer
               clippy
               rustfmt
-              # libghostty-vt-sys builds Ghostty's VT library with Zig when
-              # pkg-config is unavailable (for example outside the dev shell).
-              # Ghostty's pinned commit requires exactly 0.15.x.
-              zig_0_15
+              zig
               pkg-config
               git
               ghosttyLib

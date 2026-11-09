@@ -389,7 +389,7 @@ fn move_to(out: &mut Vec<u8>, y: u16, x: u16, cur_col: &mut Option<u16>) {
 mod tests {
     use super::*;
     use libghostty_vt::{
-        RenderState, Terminal, TerminalOptions,
+        RenderState, Terminal,
         render::{CellIterator, RowIterator},
         selection::Selection,
         terminal::{Point, PointCoordinate},
@@ -405,12 +405,7 @@ mod tests {
     }
 
     fn term_with(text: &[u8]) -> Terminal<'static, 'static> {
-        let mut term: Terminal<'static, 'static> = Terminal::new(TerminalOptions {
-            cols: 20,
-            rows: 4,
-            max_scrollback: 0,
-        })
-        .unwrap();
+        let mut term: Terminal<'static, 'static> = Terminal::new(20, 4).unwrap();
         term.resize(20, 4, 8, 16).unwrap();
         term.vt_write(text);
         term
@@ -653,12 +648,7 @@ mod tests {
 
     #[test]
     fn placeholder_cells_use_forwarded_image_id_and_drop_high_diacritic() {
-        let mut term: Terminal<'static, 'static> = Terminal::new(TerminalOptions {
-            cols: 10,
-            rows: 3,
-            max_scrollback: 0,
-        })
-        .unwrap();
+        let mut term: Terminal<'static, 'static> = Terminal::new(10, 3).unwrap();
         term.resize(10, 3, 8, 16).unwrap();
         term.set_kitty_image_storage_limit(1024 * 1024).unwrap();
         term.vt_write(

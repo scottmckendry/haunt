@@ -41,6 +41,12 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<i32> {
+    // SAFETY: this runs once, before any threads or libghostty calls.
+    unsafe {
+        libghostty_vt::kitty::graphics::set_png_decoder(Some(Box::new(
+            libghostty_vt::kitty::graphics::RustPngDecoder::new(),
+        )))?
+    };
     let cfg = config::Config::load()?;
     let size = app::query_size()?;
     let theme = theme::Theme::load();

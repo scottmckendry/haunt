@@ -7,12 +7,8 @@ edition = "2024"
 anyhow = "1"
 crossterm = "0.29"
 libc = "0.2"
-libghostty-vt = "0.2"
-# Enables the pkg-config probe so Nix builds link Ghostty's own libghostty-vt
-# derivation instead of compiling the vendored source.
-libghostty-vt-sys = { version = "0.2", features = ["pkg-config"] }
+libghostty-vt = { git = "https://github.com/Uzaaft/libghostty-rs", rev = "768add93c54ccdba3f5c4d8763789ab6416f3151", features = ["pkg-config", "png"] }
 portable-pty = "0.9"
-png = "0.18"
 serde = { version = "1", features = ["derive"] }
 signal-hook = "0.3"
 toml = "0.9"

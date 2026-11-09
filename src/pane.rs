@@ -10,10 +10,12 @@ use std::{
 use anyhow::Result;
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use libghostty_vt::{
-    RenderState, Terminal, TerminalOptions, mouse,
+    RenderState, Terminal,
+    fmt::Formatter,
+    mouse,
     render::{CellIterator, RowIterator},
     screen::TrackedGridRef,
-    selection::{FormatOptions, SelectLineOptions, SelectWordBetweenOptions, Selection},
+    selection::{SelectLineOptions, SelectWordBetweenOptions, Selection},
     terminal::{
         ClipboardLocation, ClipboardWrite, ConformanceLevel, DeviceAttributeFeature,
         DeviceAttributes, DeviceType, Mode, Point, PointCoordinate, PrimaryDeviceAttributes,
@@ -168,11 +170,9 @@ impl Pane {
         let title = Arc::new(Mutex::new(None::<String>));
         let dims_shared = Arc::new(Mutex::new(dims));
 
-        let mut term: Terminal<'static, 'static> = Terminal::new(TerminalOptions {
-            cols: dims.cols,
-            rows: dims.rows,
-            max_scrollback: 10_000,
-        })?;
+        let mut term: Terminal<'static, 'static> = Terminal::new(dims.cols, dims.rows)?;
+        term.set_scrollback_max_bytes(Some(usize::MAX))?;
+        term.set_scrollback_max_lines(Some(10_000))?;
         if let Some(theme) = theme {
             theme.apply(&mut term)?;
         }
@@ -182,7 +182,7 @@ impl Pane {
         // the library supports in addition to direct data.
         term.set_kitty_image_storage_limit(KITTY_IMAGE_STORAGE_LIMIT)?
             .set_kitty_image_from_file_allowed(true)?
-            .set_kitty_image_from_temp_file_allowed(true)?
+            .set_kitty_image_temp_file_dir(Some(&env::temp_dir()))?
             .set_kitty_image_from_shared_mem_allowed(true)?;
 
         {
@@ -199,14 +199,14 @@ impl Pane {
             let effects = Arc::clone(&effects);
             term.on_clipboard_write(move |_term, write| {
                 forward_clipboard(&effects, &write);
-                Ok(())
+                write.reply(Ok(()), false);
             })?;
         }
         {
             let current = Arc::clone(&title);
             term.on_title_changed(move |term| {
                 if let Ok(title) = term.title() {
-                    *current.lock().unwrap() = Some(title.to_string());
+                    *current.lock().unwrap() = Some(String::from_utf8_lossy(title).into_owned());
                 }
             })?;
         }
@@ -467,7 +467,7 @@ impl Pane {
                 padding_bottom: 0,
                 padding_right: 0,
                 padding_left: 0,
-            })
+            })?
             .set_any_button_pressed(self.mouse_down)
             .set_track_last_cell(true);
 
@@ -554,12 +554,12 @@ impl Pane {
         }
 
         self.sync_selection()?;
-        let bytes = self
-            .term
-            .format_selection_alloc(None, FormatOptions::new().with_unwrap(true).with_trim(true))?;
-        Ok(bytes
-            .map(|bytes| bytes.to_vec())
-            .filter(|bytes| !bytes.is_empty()))
+        let Some(mut formatter) = Formatter::new_selection(&self.term)? else {
+            return Ok(None);
+        };
+        formatter.set_unwrap(true)?.set_trim(true)?;
+        let bytes = formatter.format_alloc(None)?.to_vec();
+        Ok((!bytes.is_empty()).then_some(bytes))
     }
 
     /// Drop any local selection.
@@ -695,7 +695,7 @@ fn forward_clipboard(effects: &Arc<Mutex<Vec<u8>>>, write: &ClipboardWrite<'_>) 
     // Prefer a plain-text representation; fall back to the first one.
     let mut chosen = None;
     for content in write.contents() {
-        if content.mime == "text/plain" {
+        if content.mime == b"text/plain" {
             chosen = Some(content);
             break;
         }
@@ -707,7 +707,7 @@ fn forward_clipboard(effects: &Arc<Mutex<Vec<u8>>>, write: &ClipboardWrite<'_>) 
     out.push(selector);
     out.push(b';');
     if let Some(content) = chosen {
-        base64::encode_into(content.data.as_bytes(), &mut out);
+        base64::encode_into(content.data, &mut out);
     }
     out.push(0x07);
 }
@@ -746,9 +746,15 @@ mod tests {
         )
         .unwrap();
         let term = pane.term();
-        assert!(term.is_kitty_image_from_file_allowed().unwrap());
-        assert!(term.is_kitty_image_from_temp_file_allowed().unwrap());
-        assert!(term.is_kitty_image_from_shared_mem_allowed().unwrap());
+        assert_eq!(term.is_kitty_image_from_file_allowed().unwrap(), Some(true));
+        assert_eq!(
+            term.kitty_image_temp_file_dir().unwrap(),
+            Some(env::temp_dir().as_path())
+        );
+        assert_eq!(
+            term.is_kitty_image_from_shared_mem_allowed().unwrap(),
+            Some(true)
+        );
     }
 
     #[test]

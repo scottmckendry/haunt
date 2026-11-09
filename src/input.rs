@@ -236,12 +236,7 @@ mod tests {
     use libghostty_vt::key::Encoder;
 
     fn term_with(seq: &[u8]) -> Terminal<'static, 'static> {
-        let mut term = Terminal::new(libghostty_vt::TerminalOptions {
-            cols: 80,
-            rows: 24,
-            max_scrollback: 1000,
-        })
-        .unwrap();
+        let mut term = Terminal::new(80, 24).unwrap();
         term.vt_write(seq);
         term
     }
