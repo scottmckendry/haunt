@@ -125,10 +125,14 @@ pub fn draw<'a>(
                 text.push(' ');
             }
 
-            chars.clear();
-            chars.extend(text.chars());
-            let (_, width) = unicode::grapheme_width(&chars);
-            let width = width.max(1) as u16;
+            let width = if text.len() == 1 && text.as_bytes()[0].is_ascii_graphic() || text == " " {
+                1
+            } else {
+                chars.clear();
+                chars.extend(text.chars());
+                let (_, width) = unicode::grapheme_width(&chars);
+                width.max(1) as u16
+            };
 
             // A wide glyph that would spill past the pane edge is painted as
             // a blank so the row is still fully cleared.
