@@ -1,16 +1,30 @@
 //! Configuration: shell command, auxiliary apps, and their direct chords.
 //!
 //! Loaded from `$XDG_CONFIG_HOME/haunt/config.toml` (usually
-//! `~/.config/haunt/config.toml`). A missing file yields built-in defaults so
-//! haunt works out of the box.
+//! `~/.config/haunt/config.toml`). A missing file is created with a commented example.
 
-use std::{env, ffi::OsString, fs, path::PathBuf};
+use std::{
+    env,
+    ffi::OsString,
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result, bail};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventState, KeyModifiers};
 use serde::Deserialize;
 
 use crate::shell;
+
+const EXAMPLE_CONFIG: &str = "\
+# Configuration: https://github.com/scottmckendry/haunt\n\
+# Uncomment and customize this example to add an app.\n\
+# [[app]]\n\
+# name = \"lazygit\"\n\
+# bind = \"ctrl+alt+g\"\n\
+# cmd = [\"lazygit\"]\n\
+# size = \"full\"\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -140,15 +154,36 @@ pub struct Config {
 impl Config {
     pub fn load() -> Result<Self> {
         let Some(path) = config_path() else {
-            return Ok(Self::builtin());
+            return Self::parse("");
         };
-        match fs::read_to_string(&path) {
-            Ok(text) => {
-                Self::parse(&text).with_context(|| format!("invalid config: {}", path.display()))
+        Self::load_path(&path)
+    }
+
+    fn load_path(path: &Path) -> Result<Self> {
+        if !path.exists() {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).with_context(|| {
+                    format!("could not create config directory: {}", parent.display())
+                })?;
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::builtin()),
-            Err(e) => Err(e).with_context(|| format!("could not read config: {}", path.display())),
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+            {
+                Ok(mut file) => file
+                    .write_all(EXAMPLE_CONFIG.as_bytes())
+                    .with_context(|| format!("could not write config: {}", path.display()))?,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => {
+                    return Err(e)
+                        .with_context(|| format!("could not create config: {}", path.display()));
+                }
+            }
         }
+        let text = fs::read_to_string(path)
+            .with_context(|| format!("could not read config: {}", path.display()))?;
+        Self::parse(&text).with_context(|| format!("invalid config: {}", path.display()))
     }
 
     fn parse(text: &str) -> Result<Self> {
@@ -215,36 +250,6 @@ impl Config {
             separator,
             apps,
         })
-    }
-
-    fn builtin() -> Self {
-        let shell = shell::default_shell();
-        let apps = vec![
-            builtin_app("pi", "ctrl+alt+p", vec!["pi".into()], AppSize::Half),
-            builtin_app(
-                "lazygit",
-                "ctrl+alt+g",
-                vec!["lazygit".into()],
-                AppSize::Full,
-            ),
-            builtin_app("k9s", "ctrl+alt+k", vec!["k9s".into()], AppSize::Full),
-            builtin_app("term", "ctrl+alt+space", shell.clone(), AppSize::Half),
-        ];
-
-        Self {
-            shell,
-            separator: ' ',
-            apps,
-        }
-    }
-}
-
-fn builtin_app(name: &str, bind: &str, cmd: Vec<String>, size: AppSize) -> AppConfig {
-    AppConfig {
-        name: name.to_string(),
-        chord: Chord::parse(bind).expect("built-in bind is valid"),
-        cmd,
-        size,
     }
 }
 
@@ -349,17 +354,27 @@ mod tests {
     }
 
     #[test]
-    fn builtin_binds_are_unique() {
-        let cfg = Config::builtin();
-        let mut seen = Vec::new();
-        for app in &cfg.apps {
-            assert!(
-                !seen.contains(&app.chord),
-                "duplicate bind for {}",
-                app.name
-            );
-            seen.push(app.chord);
-        }
+    fn missing_config_is_created_with_example_and_existing_config_is_preserved() {
+        let dir = std::env::temp_dir().join(format!("haunt-config-test-{}", std::process::id()));
+        let path = dir.join("haunt/config.toml");
+        let _ = fs::remove_dir_all(&dir);
+
+        let cfg = Config::load_path(&path).unwrap();
+        assert!(cfg.apps.is_empty());
+        assert_eq!(fs::read_to_string(&path).unwrap(), EXAMPLE_CONFIG);
+        let example = EXAMPLE_CONFIG
+            .lines()
+            .skip_while(|line| *line != "# [[app]]")
+            .filter_map(|line| line.strip_prefix("# "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(Config::parse(&example).unwrap().apps.len(), 1);
+
+        let text = "[[app]]\nname = 'a'\nbind = 'ctrl+a'\ncmd = ['a']\n";
+        fs::write(&path, text).unwrap();
+        assert_eq!(Config::load_path(&path).unwrap().apps.len(), 1);
+        assert_eq!(fs::read_to_string(&path).unwrap(), text);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -390,7 +405,6 @@ mod tests {
 
     #[test]
     fn separator_defaults_to_space_and_accepts_one_cell() {
-        assert_eq!(Config::builtin().separator, ' ');
         assert_eq!(Config::parse("").unwrap().separator, ' ');
         assert_eq!(Config::parse("separator = '│'").unwrap().separator, '│');
         for value in ["", "ab", "界", "\u{301}", "\u{1b}"] {
