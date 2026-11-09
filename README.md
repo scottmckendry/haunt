@@ -6,9 +6,7 @@
 
 ---
 
-
 https://github.com/user-attachments/assets/289af5ff-8717-4650-a9d8-f3b24bf01283
-
 
 `haunt` is a small terminal multiplexer for Ghostty. It runs a main shell and lets you summon configured apps with direct keybinds. Hide an app and it keeps running; bring it back and pick up where you left off.
 
@@ -27,7 +25,7 @@ I wanted to keep the per-app keybinds, but give each app a full-featured termina
 
 ## usage
 
-Run `haunt` inside Ghostty. Your shell opens as the main pane. On first run, haunt creates `~/.config/haunt/config.toml` with a default configuration. Edit it to add your own apps and bindings, then restart haunt.
+Run `haunt` inside Ghostty. Your shell opens as the main pane. On first run, haunt creates `~/.config/haunt/config.toml` with a default configuration. Edit it to add your own apps and bindings, then press `ctrl+shift+r` to reload.
 
 Press a binding to start and show its app; press it again to hide it. Only one app is visible at a time, but hidden apps continue running. Switching to another app hides the previous one. If an app exits, its next invocation starts a fresh process. New apps start in the main pane's current working directory when it can be determined.
 
@@ -40,6 +38,8 @@ Create `~/.config/haunt/config.toml` (or `$XDG_CONFIG_HOME/haunt/config.toml` wh
 ```toml
 # Optional; defaults to your account shell, then $SHELL, then /bin/sh.
 shell = ["nu", "-l"]
+# Optional; defaults to ctrl+shift+r. Must not conflict with an app binding.
+reload_bind = "ctrl+shift+r"
 # Optional; defaults to a space. Must be one printable, one-cell character.
 separator = "│"
 

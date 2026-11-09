@@ -146,6 +146,7 @@ pub struct AppConfig {
 
 #[derive(Debug, Clone)]
 pub struct Config {
+    pub reload_bind: Chord,
     pub shell: Vec<String>,
     pub separator: char,
     pub apps: Vec<AppConfig>,
@@ -157,6 +158,14 @@ impl Config {
             return Self::parse("");
         };
         Self::load_path(&path)
+    }
+
+    /// Reload without creating a missing configuration file.
+    pub fn reload() -> Result<Self> {
+        let path = config_path().context("cannot determine config path")?;
+        let text = fs::read_to_string(&path)
+            .with_context(|| format!("could not read config: {}", path.display()))?;
+        Self::parse(&text).with_context(|| format!("invalid config: {}", path.display()))
     }
 
     fn load_path(path: &Path) -> Result<Self> {
@@ -186,7 +195,7 @@ impl Config {
         Self::parse(&text).with_context(|| format!("invalid config: {}", path.display()))
     }
 
-    fn parse(text: &str) -> Result<Self> {
+    pub(crate) fn parse(text: &str) -> Result<Self> {
         let raw: RawConfig = toml::from_str(text)?;
         Self::from_raw(raw)
     }
@@ -208,6 +217,8 @@ impl Config {
             _ => bail!("`separator` must be a single printable, one-cell character"),
         };
 
+        let reload_bind = Chord::parse(raw.reload_bind.as_deref().unwrap_or("ctrl+shift+r"))
+            .context("invalid reload_bind")?;
         let mut apps = Vec::with_capacity(raw.app.len());
         let mut seen_binds: Vec<(Chord, String)> = Vec::new();
         let mut seen_names: Vec<String> = Vec::new();
@@ -227,6 +238,9 @@ impl Config {
             let chord = Chord::parse(&raw_app.bind)
                 .with_context(|| format!("app {:?} has an invalid bind", raw_app.name))?;
 
+            if chord == reload_bind {
+                bail!("app {:?} shares the reload binding", raw_app.name);
+            }
             if let Some((_, other)) = seen_binds.iter().find(|(c, _)| *c == chord) {
                 bail!(
                     "apps {:?} and {:?} share the same bind {:?}",
@@ -246,6 +260,7 @@ impl Config {
         }
 
         Ok(Self {
+            reload_bind,
             shell,
             separator,
             apps,
@@ -274,6 +289,8 @@ fn config_path_from(xdg: Option<OsString>, home: Option<OsString>) -> Option<Pat
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawConfig {
+    #[serde(default)]
+    reload_bind: Option<String>,
     #[serde(default)]
     shell: Option<Vec<String>>,
     #[serde(default)]
@@ -411,6 +428,15 @@ mod tests {
             let input = format!("separator = {}", toml::Value::String(value.into()));
             assert!(Config::parse(&input).is_err(), "accepted {value:?}");
         }
+    }
+
+    #[test]
+    fn reload_binding_is_configurable_and_cannot_conflict() {
+        let app = "[[app]]\nname = 'a'\nbind = 'ctrl+shift+r'\ncmd = ['a']\n";
+        assert!(Config::parse(app).is_err());
+        let cfg = Config::parse(&format!("reload_bind = 'ctrl+alt+r'\n{app}")).unwrap();
+        assert_eq!(cfg.reload_bind, Chord::parse("ctrl+alt+r").unwrap());
+        assert!(Config::parse("reload_bind = 'bad+key'").is_err());
     }
 
     #[test]

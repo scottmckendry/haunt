@@ -34,6 +34,23 @@ pub struct Size {
     pub cell_h: u16,
 }
 
+/// Match new entries to old panes by name. Never discard a running process.
+fn reload_mapping(old: &Config, new: &Config, running: &[bool]) -> Result<Vec<Option<usize>>> {
+    for (idx, app) in old.apps.iter().enumerate() {
+        if running[idx] && !new.apps.iter().any(|next| next.name == app.name) {
+            anyhow::bail!(
+                "app {:?} is still running; exit it before removing or renaming it",
+                app.name
+            );
+        }
+    }
+    Ok(new
+        .apps
+        .iter()
+        .map(|app| old.apps.iter().position(|old| old.name == app.name))
+        .collect())
+}
+
 pub enum Msg {
     Output(u64, Vec<u8>),
     PaneEof(u64),
@@ -285,6 +302,10 @@ impl App {
             self.focused_mut().scroll_to_live();
         }
 
+        if self.cfg.reload_bind.matches(&ev) {
+            return self.reload_config();
+        }
+
         if let Some(idx) = self.cfg.apps.iter().position(|app| app.chord.matches(&ev)) {
             return self.toggle(idx);
         }
@@ -312,6 +333,39 @@ impl App {
         }
 
         self.send_to_focus(&buf)
+    }
+
+    fn reload_config(&mut self) -> Result<()> {
+        let cfg = match Config::reload() {
+            Ok(cfg) => cfg,
+            Err(err) => {
+                self.set_error(format!("reload failed: {err:#}"));
+                return Ok(());
+            }
+        };
+        let running: Vec<bool> = self.aux.iter().map(Option::is_some).collect();
+        let mapping = match reload_mapping(&self.cfg, &cfg, &running) {
+            Ok(mapping) => mapping,
+            Err(err) => {
+                self.set_error(format!("reload failed: {err:#}"));
+                return Ok(());
+            }
+        };
+        let visible = self
+            .visible
+            .and_then(|old| mapping.iter().position(|&i| i == Some(old)));
+        let mut old_aux = std::mem::take(&mut self.aux);
+        self.aux = mapping
+            .iter()
+            .map(|idx| idx.and_then(|i| old_aux[i].take()))
+            .collect();
+        self.visible = visible;
+        self.cfg = cfg;
+        self.main.force_repaint();
+        for pane in self.aux.iter_mut().flatten() {
+            pane.force_repaint();
+        }
+        self.relayout()
     }
 
     fn send_to_focus(&mut self, bytes: &[u8]) -> Result<()> {
@@ -1007,6 +1061,22 @@ pub const TICK: Duration = Duration::from_millis(16);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reload_maps_by_name_and_rejects_removing_running_apps() {
+        let old = Config::parse("[[app]]\nname='a'\nbind='ctrl+a'\ncmd=['a']\n[[app]]\nname='b'\nbind='ctrl+b'\ncmd=['b']").unwrap();
+        let new = Config::parse("[[app]]\nname='b'\nbind='ctrl+c'\ncmd=['new']\n[[app]]\nname='a'\nbind='ctrl+a'\ncmd=['a']\n[[app]]\nname='c'\nbind='ctrl+d'\ncmd=['c']").unwrap();
+        assert_eq!(
+            reload_mapping(&old, &new, &[true, true]).unwrap(),
+            vec![Some(1), Some(0), None]
+        );
+        let removed = Config::parse("[[app]]\nname='b'\nbind='ctrl+b'\ncmd=['b']").unwrap();
+        assert!(reload_mapping(&old, &removed, &[true, false]).is_err());
+        assert_eq!(
+            reload_mapping(&old, &removed, &[false, true]).unwrap(),
+            vec![Some(1)]
+        );
+    }
 
     fn size(cols: u16, rows: u16) -> Size {
         Size {
