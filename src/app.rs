@@ -64,6 +64,12 @@ enum Focus {
     Aux,
 }
 
+struct Notification {
+    message: String,
+    is_error: bool,
+    expires: Option<Instant>,
+}
+
 struct ClickState {
     time: Instant,
     x: u16,
@@ -87,7 +93,7 @@ pub struct App {
     frame_dirty: bool,
     running: bool,
     exit_code: i32,
-    error: Option<String>,
+    notification: Option<Notification>,
     outer_focus: bool,
     selecting: Option<u64>,
     click: Option<ClickState>,
@@ -124,7 +130,7 @@ impl App {
             frame_dirty: true,
             running: true,
             exit_code: 0,
-            error: None,
+            notification: None,
             outer_focus: true,
             selecting: None,
             click: None,
@@ -272,8 +278,8 @@ impl App {
                 .paint(&mut frame, main_area, true, &mut self.graphics)?,
         }
 
-        if let Some(error) = &self.error {
-            paint_error(&mut frame, full_area(self.size), error);
+        if let Some(notification) = &self.notification {
+            paint_notification(&mut frame, full_area(self.size), notification);
         }
 
         frame.extend_from_slice(b"\x1b[?2026l");
@@ -291,7 +297,12 @@ impl App {
     }
 
     fn on_key(&mut self, ev: KeyEvent) -> Result<()> {
-        self.clear_error();
+        if ev.kind != KeyEventKind::Release && self.notification.is_some() {
+            self.clear_notification();
+            if ev.code == crossterm::event::KeyCode::Esc && ev.modifiers.is_empty() {
+                return Ok(());
+            }
+        }
 
         // Typing clears a local selection, as in Ghostty.
         if ev.kind != KeyEventKind::Release {
@@ -365,7 +376,14 @@ impl App {
         for pane in self.aux.iter_mut().flatten() {
             pane.force_repaint();
         }
-        self.relayout()
+        self.relayout()?;
+        self.notification = Some(Notification {
+            message: "Configuration reloaded".into(),
+            is_error: false,
+            expires: Some(Instant::now() + Duration::from_secs(2)),
+        });
+        self.frame_dirty = true;
+        Ok(())
     }
 
     fn send_to_focus(&mut self, bytes: &[u8]) -> Result<()> {
@@ -466,7 +484,6 @@ impl App {
 
         self.visible = Some(idx);
         self.focus = Focus::Aux;
-        self.error = None;
         self.focus_changed(old_id)?;
         self.relayout()
     }
@@ -635,8 +652,16 @@ impl App {
         self.pending_writes.push(0x07);
     }
 
-    /// Timed work for selection autoscroll; called once per event-loop tick.
+    /// Timed work for notifications and selection autoscroll.
     pub fn tick(&mut self) -> Result<()> {
+        if self
+            .notification
+            .as_ref()
+            .and_then(|n| n.expires)
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            self.clear_notification();
+        }
         let Some(id) = self.selecting else {
             return Ok(());
         };
@@ -829,12 +854,16 @@ impl App {
     }
 
     fn set_error(&mut self, error: String) {
-        self.error = Some(error);
+        self.notification = Some(Notification {
+            message: error,
+            is_error: true,
+            expires: None,
+        });
         self.frame_dirty = true;
     }
 
-    fn clear_error(&mut self) {
-        if self.error.take().is_none() {
+    fn clear_notification(&mut self) {
+        if self.notification.take().is_none() {
             return;
         }
         self.main.force_repaint();
@@ -1007,22 +1036,112 @@ fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
     }
 }
 
-fn paint_error(out: &mut Vec<u8>, area: Area, message: &str) {
+fn paint_notification(out: &mut Vec<u8>, area: Area, notification: &Notification) {
     if area.w == 0 || area.h == 0 {
         return;
     }
-
-    let width = area.w as usize;
-    let mut text: String = message.chars().take(width).collect();
-    let len = text.chars().count();
-    text.extend(std::iter::repeat_n(' ', width.saturating_sub(len)));
-
-    out.extend_from_slice(b"\x1b[?25l");
-    out.extend_from_slice(
-        format!("\x1b[{};{}H\x1b[0m\x1b[7m", area.y + area.h, area.x + 1).as_bytes(),
-    );
-    out.extend_from_slice(text.as_bytes());
-    out.extend_from_slice(b"\x1b[0m");
+    // Keep horizontal padding, but place the top and bottom borders against the text.
+    let bordered = area.w >= 5 && area.h >= 3;
+    let inset = if bordered { 2 } else { 0 };
+    let vertical = usize::from(bordered);
+    let content_width = area.w as usize - inset * 2;
+    let content_height = area.h as usize - vertical * 2;
+    let mut lines = vec![(String::new(), 0usize)];
+    let mut clipped = false;
+    // Use text symbols rather than emoji, whose cell widths vary by terminal.
+    let icon = if notification.is_error {
+        "✗ "
+    } else {
+        "✓ "
+    };
+    let prefix = if content_width >= 8 { icon } else { "" };
+    // Preserve indentation within multiline errors, but drop surrounding whitespace.
+    let message = if notification.is_error {
+        notification.message.trim()
+    } else {
+        &notification.message
+    };
+    // Wrap by terminal cells. Newlines are layout, never terminal control bytes.
+    for c in prefix.chars().chain(message.chars()) {
+        if c == '\n' {
+            if lines.len() == content_height {
+                clipped = true;
+                break;
+            }
+            lines.push((String::new(), 0));
+            continue;
+        }
+        let c = if c.is_control() { ' ' } else { c };
+        let w = libghostty_vt::unicode::grapheme_width(&[c]).1 as usize;
+        if w == 0 {
+            continue;
+        }
+        if w > content_width {
+            continue;
+        }
+        if lines.last().unwrap().1 + w > content_width {
+            if lines.len() == content_height {
+                clipped = true;
+                break;
+            }
+            lines.push((String::new(), 0));
+        }
+        let line = lines.last_mut().unwrap();
+        line.0.push(c);
+        line.1 += w;
+    }
+    if clipped {
+        *lines.last_mut().unwrap() = ("…".into(), 1);
+    }
+    let mut width = lines.iter().map(|line| line.1).max().unwrap_or(0) + inset * 2;
+    let title = bordered && area.w >= 11;
+    if title {
+        width = width.max(11);
+    }
+    if width == 0 {
+        return;
+    }
+    let text_style = if notification.is_error {
+        "\x1b[31m"
+    } else {
+        "\x1b[32m"
+    };
+    let x = area.x + area.w - width as u16 + 1;
+    out.extend_from_slice(b"\x1b7");
+    for row in 0..lines.len() + vertical * 2 {
+        out.extend_from_slice(
+            format!("\x1b[{};{}H\x1b[0;90m", area.y as usize + row + 1, x).as_bytes(),
+        );
+        if bordered && (row == 0 || row == lines.len() + 1) {
+            out.extend_from_slice(if row == 0 { "╭" } else { "╰" }.as_bytes());
+            let title_width = if row == 0 && title {
+                out.extend_from_slice("─ \x1b[1;36mhaunt\x1b[22;90m ".as_bytes());
+                8
+            } else {
+                0
+            };
+            for _ in 0..width - 2 - title_width {
+                out.extend_from_slice("─".as_bytes());
+            }
+            out.extend_from_slice(if row == 0 { "╮" } else { "╯" }.as_bytes());
+        } else {
+            let (text, cells) = &lines[row - vertical];
+            if bordered {
+                out.extend_from_slice("│ ".as_bytes());
+            }
+            out.extend_from_slice(text_style.as_bytes());
+            out.extend_from_slice(text.as_bytes());
+            out.extend_from_slice(b"\x1b[90m");
+            out.extend(std::iter::repeat_n(
+                b' ',
+                width - inset - cells - usize::from(bordered),
+            ));
+            if bordered {
+                out.extend_from_slice("│".as_bytes());
+            }
+        }
+    }
+    out.extend_from_slice(b"\x1b[0m\x1b8");
 }
 
 pub fn query_size() -> Result<Size> {
@@ -1061,6 +1180,129 @@ pub const TICK: Duration = Duration::from_millis(16);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notification_is_bounded_and_sanitizes_control_characters() {
+        let notification = Notification {
+            message: "a\x1b界\nb".into(),
+            is_error: true,
+            expires: None,
+        };
+        let mut out = Vec::new();
+        paint_notification(
+            &mut out,
+            Area {
+                x: 0,
+                y: 0,
+                w: 8,
+                h: 6,
+            },
+            &notification,
+        );
+        let rendered = String::from_utf8(out).unwrap();
+        assert!(rendered.contains("╭──────╮"));
+        assert!(!rendered.contains("│      │"));
+        assert!(rendered.contains("│ \x1b[31ma 界\x1b[90m │"));
+        assert!(rendered.contains("│ \x1b[31mb\x1b[90m    │"));
+        assert!(rendered.contains("╰──────╯"));
+        assert!(!rendered.contains("\x1b界"));
+        assert!(rendered.ends_with("\x1b[0m\x1b8"));
+        let mut tiny = Vec::new();
+        paint_notification(
+            &mut tiny,
+            Area {
+                x: 0,
+                y: 0,
+                w: 1,
+                h: 1,
+            },
+            &notification,
+        );
+        assert!(String::from_utf8(tiny).unwrap().contains('…'));
+    }
+
+    #[test]
+    fn notification_trims_error_whitespace_but_preserves_inner_indentation() {
+        let notification = Notification {
+            message: " \n error\n  detail \n\n".into(),
+            is_error: true,
+            expires: None,
+        };
+        let mut out = Vec::new();
+        paint_notification(
+            &mut out,
+            Area {
+                x: 0,
+                y: 0,
+                w: 30,
+                h: 8,
+            },
+            &notification,
+        );
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("✗ error"));
+        assert!(text.contains("  detail"));
+        assert!(text.contains("\x1b[4;"));
+        assert!(!text.contains("\x1b[5;"));
+    }
+
+    #[test]
+    fn notification_title_fits_and_disappears_on_narrow_terminals() {
+        let notification = Notification {
+            message: "ok".into(),
+            is_error: false,
+            expires: None,
+        };
+        let mut out = Vec::new();
+        paint_notification(
+            &mut out,
+            Area {
+                x: 0,
+                y: 0,
+                w: 11,
+                h: 3,
+            },
+            &notification,
+        );
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("╭─ \x1b[1;36mhaunt\x1b[22;90m ─╮"));
+        assert!(text.contains("╰─────────╯"));
+        let mut narrow = Vec::new();
+        paint_notification(
+            &mut narrow,
+            Area {
+                x: 0,
+                y: 0,
+                w: 10,
+                h: 3,
+            },
+            &notification,
+        );
+        assert!(!String::from_utf8(narrow).unwrap().contains("haunt"));
+    }
+
+    #[test]
+    fn notification_wraps_and_marks_overflow() {
+        let notification = Notification {
+            message: "abcdefghi".into(),
+            is_error: true,
+            expires: None,
+        };
+        let mut out = Vec::new();
+        paint_notification(
+            &mut out,
+            Area {
+                x: 0,
+                y: 0,
+                w: 7,
+                h: 4,
+            },
+            &notification,
+        );
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("\x1b[31mabc\x1b[90m"));
+        assert!(text.contains("\x1b[31m…\x1b[90m"));
+    }
 
     #[test]
     fn reload_maps_by_name_and_rejects_removing_running_apps() {
