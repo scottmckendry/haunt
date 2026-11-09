@@ -18,10 +18,11 @@ use libghostty_vt::{key, terminal::Mode};
 
 use crate::{
     base64,
-    config::{AppSize, Chord, Config},
+    config::{AppSize, Config},
     graphics::Graphics,
-    input, osc,
-    overlay::{self, Notification},
+    input,
+    notification::{self, Notification, NotificationKind},
+    osc,
     paint::Area,
     pane::{Pane, PaneDims, SelectKind},
     theme::Theme,
@@ -65,28 +66,6 @@ enum Focus {
     Aux,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum HelpKeyAction {
-    Toggle,
-    Dismiss,
-    DismissAndForward,
-    Forward,
-}
-
-fn help_key_action(open: bool, bind: Option<Chord>, ev: &KeyEvent) -> HelpKeyAction {
-    if bind.is_some_and(|bind| bind.matches(ev)) {
-        HelpKeyAction::Toggle
-    } else if open && ev.kind != KeyEventKind::Release {
-        if ev.code == crossterm::event::KeyCode::Esc && ev.modifiers.is_empty() {
-            HelpKeyAction::Dismiss
-        } else {
-            HelpKeyAction::DismissAndForward
-        }
-    } else {
-        HelpKeyAction::Forward
-    }
-}
-
 struct ClickState {
     time: Instant,
     x: u16,
@@ -110,8 +89,8 @@ pub struct App {
     frame_dirty: bool,
     running: bool,
     exit_code: i32,
-    notification: Option<Notification>,
-    help_open: bool,
+    notifications: Vec<Notification>,
+    last_notification_tick: Instant,
     outer_focus: bool,
     selecting: Option<u64>,
     click: Option<ClickState>,
@@ -148,8 +127,8 @@ impl App {
             frame_dirty: true,
             running: true,
             exit_code: 0,
-            notification: None,
-            help_open: false,
+            notifications: Vec::new(),
+            last_notification_tick: Instant::now(),
             outer_focus: true,
             selecting: None,
             click: None,
@@ -297,11 +276,13 @@ impl App {
                 .paint(&mut frame, main_area, true, &mut self.graphics)?,
         }
 
-        if self.help_open {
-            overlay::paint_help(&mut frame, full_area(self.size), &self.cfg);
-        } else if let Some(notification) = &self.notification {
-            overlay::paint_notification(&mut frame, full_area(self.size), notification);
-        }
+        notification::paint_notifications(
+            &mut frame,
+            full_area(self.size),
+            &self.notifications,
+            &self.cfg,
+            Instant::now(),
+        );
 
         frame.extend_from_slice(b"\x1b[?2026l");
         out.write_all(&frame)?;
@@ -318,27 +299,17 @@ impl App {
     }
 
     fn on_key(&mut self, ev: KeyEvent) -> Result<()> {
-        match help_key_action(self.help_open, self.cfg.help_bind, &ev) {
-            HelpKeyAction::Toggle => {
-                self.help_open = !self.help_open;
-                self.clear_notification();
-                self.repaint_overlay_area();
-                return Ok(());
-            }
-            action @ (HelpKeyAction::Dismiss | HelpKeyAction::DismissAndForward) => {
-                self.help_open = false;
-                self.repaint_overlay_area();
-                if action == HelpKeyAction::Dismiss {
-                    return Ok(());
-                }
-            }
-            HelpKeyAction::Forward => {}
+        if self.cfg.help_bind.is_some_and(|bind| bind.matches(&ev)) {
+            self.push_notification(NotificationKind::Help);
+            return Ok(());
         }
-        if ev.kind != KeyEventKind::Release && self.notification.is_some() {
-            self.clear_notification();
-            if ev.code == crossterm::event::KeyCode::Esc && ev.modifiers.is_empty() {
-                return Ok(());
-            }
+        if ev.kind != KeyEventKind::Release
+            && !self.notifications.is_empty()
+            && ev.code == crossterm::event::KeyCode::Esc
+            && ev.modifiers.is_empty()
+        {
+            self.clear_notifications();
+            return Ok(());
         }
 
         // Typing clears a local selection, as in Ghostty.
@@ -414,12 +385,7 @@ impl App {
             pane.force_repaint();
         }
         self.relayout()?;
-        self.notification = Some(Notification {
-            message: "Configuration reloaded".into(),
-            is_error: false,
-            expires: Some(Instant::now() + Duration::from_secs(2)),
-        });
-        self.frame_dirty = true;
+        self.push_notification(NotificationKind::Success("Configuration reloaded".into()));
         Ok(())
     }
 
@@ -691,13 +657,19 @@ impl App {
 
     /// Timed work for notifications and selection autoscroll.
     pub fn tick(&mut self) -> Result<()> {
-        if self
-            .notification
-            .as_ref()
-            .and_then(|n| n.expires)
-            .is_some_and(|deadline| Instant::now() >= deadline)
+        let now = Instant::now();
+        let was_animating = self
+            .notifications
+            .iter()
+            .any(|n| n.animating(self.last_notification_tick));
+        self.last_notification_tick = now;
+        let old_len = self.notifications.len();
+        self.notifications.retain(|n| !n.expired(now));
+        if old_len != self.notifications.len()
+            || was_animating
+            || self.notifications.iter().any(|n| n.animating(now))
         {
-            self.clear_notification();
+            self.repaint_overlay_area();
         }
         let Some(id) = self.selecting else {
             return Ok(());
@@ -891,16 +863,22 @@ impl App {
     }
 
     fn set_error(&mut self, error: String) {
-        self.notification = Some(Notification {
-            message: error,
-            is_error: true,
-            expires: None,
-        });
-        self.frame_dirty = true;
+        self.push_notification(NotificationKind::Error(error));
     }
 
-    fn clear_notification(&mut self) {
-        if self.notification.take().is_some() {
+    fn push_notification(&mut self, kind: NotificationKind) {
+        const MAX_NOTIFICATIONS: usize = 8;
+        if self.notifications.len() == MAX_NOTIFICATIONS {
+            self.notifications.remove(0);
+        }
+        self.notifications
+            .push(Notification::new(kind, Instant::now()));
+        self.repaint_overlay_area();
+    }
+
+    fn clear_notifications(&mut self) {
+        if !self.notifications.is_empty() {
+            self.notifications.clear();
             self.repaint_overlay_area();
         }
     }
@@ -1112,35 +1090,6 @@ pub const TICK: Duration = Duration::from_millis(16);
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn help_keys_toggle_dismiss_and_forward() {
-        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-        let bind = Some(Chord::parse("ctrl+shift+h").unwrap());
-        let hotkey = KeyEvent::new(
-            KeyCode::Char('H'),
-            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-        );
-        let escape = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-        let other = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
-        let release =
-            KeyEvent::new_with_kind(KeyCode::Esc, KeyModifiers::NONE, KeyEventKind::Release);
-        assert_eq!(help_key_action(false, bind, &hotkey), HelpKeyAction::Toggle);
-        assert_eq!(help_key_action(true, bind, &hotkey), HelpKeyAction::Toggle);
-        assert_eq!(help_key_action(true, bind, &escape), HelpKeyAction::Dismiss);
-        assert_eq!(
-            help_key_action(true, bind, &other),
-            HelpKeyAction::DismissAndForward
-        );
-        assert_eq!(
-            help_key_action(true, bind, &release),
-            HelpKeyAction::Forward
-        );
-        assert_eq!(
-            help_key_action(false, bind, &escape),
-            HelpKeyAction::Forward
-        );
-    }
 
     #[test]
     fn reload_maps_by_name_and_rejects_removing_running_apps() {

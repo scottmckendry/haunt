@@ -31,7 +31,7 @@ Press a binding to start and show its app; press it again to hide it. Only one a
 
 A half-size app appears to the right of the main pane; a full-size app covers it. Click a pane to focus it.
 
-Press `ctrl+shift+h` to show a help screen with your configured apps and bindings. Press `ctrl+shift+r` to reload the configuration.
+Press `ctrl+shift+h` to show your configured apps and bindings. Press `ctrl+shift+r` to reload the configuration. Help and other notifications stack and disappear after five seconds; press Esc to dismiss them early.
 
 <table align="center">
     <tr>
