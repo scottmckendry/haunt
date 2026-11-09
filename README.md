@@ -6,6 +6,10 @@
 
 ---
 
+
+https://github.com/user-attachments/assets/289af5ff-8717-4650-a9d8-f3b24bf01283
+
+
 `haunt` is a small terminal multiplexer for Ghostty. It runs a main shell and lets you summon configured apps with direct keybinds. Hide an app and it keeps running; bring it back and pick up where you left off.
 
 Each Ghostty tab runs its own haunt process. Apps persist while that process is running, independently of programs such as Neovim in the main shell. `haunt` is not a detachable session manager: exiting the main shell or closing the tab ends the session and shuts down its apps.
