@@ -9,6 +9,7 @@ use anyhow::Result;
 use libghostty_vt::{
     Error, Terminal,
     render::{CellIterator, CursorVisualStyle, RowIterator, Snapshot},
+    screen::CellWide,
     style::{RgbColor, Style, StyleColor, Underline},
     terminal::{Point, PointCoordinate},
     unicode,
@@ -90,6 +91,12 @@ pub fn draw<'a>(
             // OSC 8 hyperlinks and placeholder IDs are not part of the
             // render state, so resolve them through the raw cell.
             let raw = cell.raw_cell()?;
+            // The tail cell of a wide glyph has no content of its own: the
+            // preceding wide cell already advanced x past both columns. Skip
+            // it so we don't paint a redundant blank after the wide glyph.
+            if matches!(raw.wide()?, CellWide::SpacerTail) {
+                continue;
+            }
             let placeholder = raw.codepoint()? == PLACEHOLDER;
             let fg = if placeholder {
                 match placeholder_outer_id(graphics, pane_id, &style) {
@@ -700,6 +707,29 @@ mod tests {
         assert!(
             !text.contains("\u{30D}"),
             "high ID diacritic should be dropped: {text:?}"
+        );
+    }
+
+    #[test]
+    fn wide_glyphs_do_not_paint_their_spacer_tail() {
+        let term = term_with("📦 v0.1.0".as_bytes());
+        let mut render_state = RenderState::new().unwrap();
+        let mut rows = RowIterator::new().unwrap();
+        let mut cells = CellIterator::new().unwrap();
+        let mut out = Vec::new();
+        draw_term(
+            &term,
+            &mut render_state,
+            &mut rows,
+            &mut cells,
+            &PaintState::default(),
+            &mut out,
+        )
+        .unwrap();
+        let text = String::from_utf8_lossy(&out);
+        assert!(
+            text.contains("📦 v0.1.0"),
+            "spacer tail was painted: {text:?}"
         );
     }
 }
