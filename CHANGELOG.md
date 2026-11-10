@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.2.0](https://github.com/scottmckendry/haunt/compare/haunt-v0.1.0...haunt-v0.2.0) (2026-11-10)
+
+
+### Features
+
+* **config:** add default reload binding ([d6d053d](https://github.com/scottmckendry/haunt/commit/d6d053dc5754b87babda997fd0210361b3ac5e84))
+* **overlay:** add module, help overlay ([2cbc701](https://github.com/scottmckendry/haunt/commit/2cbc701952261446921e6ce289502188da95097c))
+* **overlay:** animate notifications with shared type ([b307c48](https://github.com/scottmckendry/haunt/commit/b307c48d4642cdc79397d302cfdc04ac9dc5d400))
+* **paint:** reload notifications ([5cdf96b](https://github.com/scottmckendry/haunt/commit/5cdf96b65360f20f3ca11db7c06a9750cac27a4a))
+
+
+### Bug Fixes
+
+* avoid exit on invalid config ([b3f56ee](https://github.com/scottmckendry/haunt/commit/b3f56ee986e6bae28a9d224983cd3ed815e7e4ee))
+* pane resize lag in some apps ([12dab3e](https://github.com/scottmckendry/haunt/commit/12dab3e7a0189434784c30d31d9181608b184e8c))
+
 ## [0.1.0](https://github.com/scottmckendry/haunt/compare/haunt-v0.1.0...haunt-v0.1.0) (2026-11-09)
 
 
