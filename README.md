@@ -78,6 +78,20 @@ cmd = ["nu", "-l"]
 
 Include every app you want to use in the config. `size` defaults to `half`; `full` is the other option. Commands are arrays of the executable and its arguments, not shell command strings. App names and bindings must be unique. Bindings support `ctrl`, `alt`, `shift`, and `super` modifiers, plus keys such as letters, `space`, `enter`, arrow keys and `f1`–`f24`.
 
+## installation
+
+Prebuilt binaries are attached to [GitHub Releases](https://github.com/scottmckendry/haunt/releases). For now these are `x86_64` Linux builds. To install the latest release:
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/scottmckendry/haunt/releases/latest/download/haunt-installer.sh | sh
+```
+
+Each release includes per-archive `.sha256` files and a `sha256.sum` covering the release archives. To verify a downloaded archive:
+
+```sh
+sha256sum -c sha256.sum
+```
+
 ## building
 
 The Nix flake provides a package and development shell for `x86_64-linux`:
