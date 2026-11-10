@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/scottmckendry/haunt/compare/haunt-v0.2.0...haunt-v0.3.0) (2026-11-10)
+
+
+### Features
+
+* experimental multiarch support ([927065e](https://github.com/scottmckendry/haunt/commit/927065edec571268d4ceca6fa740d60afd13d2ae))
+
+
+### Bug Fixes
+
+* **macos:** handle 'option' bindings ([430f7b1](https://github.com/scottmckendry/haunt/commit/430f7b1d1afddf38253525a003901f4b322296c8))
+
 ## [0.2.0](https://github.com/scottmckendry/haunt/compare/haunt-v0.1.0...haunt-v0.2.0) (2026-11-10)
 
 
