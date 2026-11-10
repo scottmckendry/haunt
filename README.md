@@ -83,7 +83,7 @@ Include every app you want to use in the config. `size` defaults to `half`; `ful
 Prebuilt binaries are attached to [GitHub Releases](https://github.com/scottmckendry/haunt/releases). For now these are `x86_64` Linux builds. To install the latest release:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/scottmckendry/haunt/releases/latest/download/haunt-installer.sh | sh
+curl -fsSL https://github.com/scottmckendry/haunt/releases/latest/download/haunt-installer.sh | sh
 ```
 
 Each release includes per-archive `.sha256` files and a `sha256.sum` covering the release archives. To verify a downloaded archive:
