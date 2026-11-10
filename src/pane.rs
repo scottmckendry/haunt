@@ -666,8 +666,7 @@ impl Pane {
     /// The working directory of the pane's current foreground process.
     pub fn cwd(&self) -> Option<PathBuf> {
         let pgid = self.master.process_group_leader()?;
-        let path = std::fs::read_link(format!("/proc/{pgid}/cwd")).ok()?;
-        path.is_dir().then_some(path)
+        process_cwd(pgid)
     }
 
     /// Wait for the child to exit and return its status.
@@ -715,6 +714,62 @@ fn forward_clipboard(effects: &Arc<Mutex<Vec<u8>>>, write: &ClipboardWrite<'_>) 
         base64::encode_into(content.data, &mut out);
     }
     out.push(0x07);
+}
+
+#[cfg(target_os = "linux")]
+fn process_cwd(pid: libc::pid_t) -> Option<PathBuf> {
+    let path = std::fs::read_link(format!("/proc/{pid}/cwd")).ok()?;
+    path.is_dir().then_some(path)
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "proc")]
+unsafe extern "C" {
+    fn proc_pidinfo(
+        pid: libc::c_int,
+        flavor: libc::c_int,
+        arg: u64,
+        buffer: *mut std::ffi::c_void,
+        buffersize: libc::c_int,
+    ) -> libc::c_int;
+}
+
+#[cfg(target_os = "macos")]
+fn process_cwd(pid: libc::pid_t) -> Option<PathBuf> {
+    use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+
+    let mut info = std::mem::MaybeUninit::<libc::proc_vnodepathinfo>::zeroed();
+    let size = std::mem::size_of::<libc::proc_vnodepathinfo>();
+    // SAFETY: `info` points to `size` writable bytes and `pid` is a live
+    // process group id returned by the pty. The kernel writes at most `size`
+    // bytes.
+    let written = unsafe {
+        proc_pidinfo(
+            pid,
+            libc::PROC_PIDVNODEPATHINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            size as libc::c_int,
+        )
+    };
+    if written != size as libc::c_int {
+        return None;
+    }
+    // SAFETY: the kernel reported writing the whole structure.
+    let info = unsafe { info.assume_init() };
+    let path = &info.pvi_cdir.vip_path;
+    // SAFETY: `vip_path` is a plain byte array that the kernel initialised.
+    let bytes = unsafe {
+        std::slice::from_raw_parts(path.as_ptr().cast::<u8>(), std::mem::size_of_val(path))
+    };
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    let cwd = PathBuf::from(OsStr::from_bytes(&bytes[..end]));
+    cwd.is_dir().then_some(cwd)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn process_cwd(_pid: libc::pid_t) -> Option<PathBuf> {
+    None
 }
 
 fn mouse_button(button: MouseButton) -> mouse::Button {

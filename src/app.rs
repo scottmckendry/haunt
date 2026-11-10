@@ -931,11 +931,20 @@ fn osc7_sequence(hostname: &str, cwd: &Path) -> Vec<u8> {
 }
 
 fn hostname() -> String {
-    std::fs::read_to_string("/proc/sys/kernel/hostname")
+    let mut buf = [0u8; 256];
+    // SAFETY: `buf` is valid writable storage for its full length.
+    if unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } == 0 {
+        let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+        if let Ok(name) = std::str::from_utf8(&buf[..end]) {
+            let name = name.trim();
+            if !name.is_empty() {
+                return name.to_owned();
+            }
+        }
+    }
+    std::env::var("HOSTNAME")
         .ok()
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty())
-        .or_else(|| std::env::var("HOSTNAME").ok().filter(|s| !s.is_empty()))
+        .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "localhost".into())
 }
 

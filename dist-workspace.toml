@@ -5,6 +5,11 @@ members = ["cargo:."]
 cargo-dist-version = "0.34.0"
 hosting = ["github"]
 installers = ["shell"]
-targets = ["x86_64-unknown-linux-gnu"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
 install-path = "CARGO_HOME"
 install-updater = false

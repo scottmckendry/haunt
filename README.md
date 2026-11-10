@@ -81,7 +81,7 @@ Include every app you want to use in the config. `size` defaults to `half`; `ful
 
 ## installation
 
-Prebuilt binaries are attached to [GitHub Releases](https://github.com/scottmckendry/haunt/releases). For now these are `x86_64` Linux builds. To install the latest release:
+Prebuilt binaries are attached to [GitHub Releases](https://github.com/scottmckendry/haunt/releases) for `x86_64` and `aarch64` Linux, plus Intel and Apple Silicon macOS. To install the latest release:
 
 ```sh
 curl -fsSL https://github.com/scottmckendry/haunt/releases/latest/download/haunt-installer.sh | sh
@@ -93,9 +93,11 @@ Each release includes per-archive `.sha256` files and a `sha256.sum` covering th
 sha256sum -c sha256.sum
 ```
 
+On macOS, use `shasum -a 256 -c sha256.sum` instead.
+
 ## building
 
-The Nix flake provides a package and development shell for `x86_64-linux`:
+The Nix flake provides packages and development shells for `x86_64` and `aarch64` Linux, plus Apple Silicon macOS:
 
 ```sh
 nix build

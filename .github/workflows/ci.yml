@@ -19,11 +19,19 @@ env:
 
 jobs:
   check:
-    name: Format, lint, test, build
-    runs-on: ubuntu-latest
+    name: Format, lint, test, build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+          - macos-15
+          - macos-15-intel
 
     steps:
       - uses: actions/checkout@v7
@@ -72,17 +80,28 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  release:
-    name: Build release artifacts
+  build-artifacts:
+    name: Build ${{ matrix.target }}
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+          - target: aarch64-apple-darwin
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     permissions:
-      contents: write
+      contents: read
     env:
       TAG: ${{ needs.release-please.outputs.tag_name }}
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -105,26 +124,76 @@ jobs:
           curl --proto '=https' --tlsv1.2 -LsSf \
             https://github.com/axodotdev/cargo-dist/releases/download/v0.34.0/cargo-dist-installer.sh | sh
 
-      - name: Build Linux artifacts
+      - name: Build artifacts
         run: |
           dist build --tag "$TAG" \
             --artifacts=local \
-            --target=x86_64-unknown-linux-gnu \
+            --target=${{ matrix.target }} \
             --print=linkage \
             --output-format=json > dist-manifest.json
           cp dist-manifest.json \
-            target/distrib/x86_64-unknown-linux-gnu-dist-manifest.json
+            target/distrib/${{ matrix.target }}-dist-manifest.json
+
+      - name: Upload local artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-build-local-${{ matrix.target }}
+          path: |
+            target/distrib/*.tar.xz
+            target/distrib/*.zip
+            target/distrib/*.sha256
+            target/distrib/*-dist-manifest.json
+
+  release:
+    name: Build installers and publish release
+    needs:
+      - release-please
+      - build-artifacts
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.release-please.outputs.tag_name }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-please.outputs.sha || needs.release-please.outputs.tag_name }}
+
+      - name: Install dist
+        shell: bash
+        run: |
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            https://github.com/axodotdev/cargo-dist/releases/download/v0.34.0/cargo-dist-installer.sh | sh
+
+      - name: Fetch local artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: artifacts-build-local-*
+          path: target/distrib
+          merge-multiple: true
 
       - name: Build installers and checksums
         run: |
           dist build --tag "$TAG" \
             --artifacts=global \
             --output-format=json > global-dist-manifest.json
+          cp global-dist-manifest.json \
+            target/distrib/global-dist-manifest.json
 
       - name: Upload artifacts to GitHub Release
         run: |
           mapfile -t files < <(
-            dist print-upload-files-from-manifest --manifest dist-manifest.json
-            dist print-upload-files-from-manifest --manifest global-dist-manifest.json
+            for manifest in target/distrib/*-dist-manifest.json; do
+              dist print-upload-files-from-manifest --manifest "$manifest"
+            done | while IFS= read -r file; do
+              if [[ -f "$file" ]]; then
+                printf '%s\n' "$file"
+              elif [[ -f "target/distrib/$(basename "$file")" ]]; then
+                printf '%s\n' "target/distrib/$(basename "$file")"
+              fi
+            done | sort -u
           )
           gh release upload "$TAG" --clobber "${files[@]}"

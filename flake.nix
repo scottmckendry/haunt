@@ -18,7 +18,11 @@
       ghostty,
     }:
     let
-      systems = [ "x86_64-linux" ];
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+        "aarch64-darwin"
+      ];
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
     in
     {
@@ -45,7 +49,7 @@
             meta = {
               description = "A small terminal multiplexer for Ghostty";
               mainProgram = "haunt";
-              platforms = pkgs.lib.platforms.linux;
+              platforms = pkgs.lib.platforms.unix;
             };
           };
         }
