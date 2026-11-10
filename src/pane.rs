@@ -366,6 +366,11 @@ impl Pane {
             pixel_width: dims.pixel_width(),
             pixel_height: dims.pixel_height(),
         })?;
+        // Programs that enable mode 2048 (in-band resize reports) stop
+        // listening for SIGWINCH. libghostty queues the report during
+        // `term.resize`, so deliver it now instead of waiting for the child's
+        // next output to flush it.
+        self.flush_responses()?;
         *self.dims.lock().unwrap() = dims;
         self.dirty = true;
         Ok(())
@@ -728,6 +733,8 @@ impl Drop for Pane {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
+    use std::io;
+
     use super::*;
 
     #[test]
@@ -755,6 +762,58 @@ mod tests {
             term.is_kitty_image_from_shared_mem_allowed().unwrap(),
             Some(true)
         );
+    }
+
+    #[derive(Clone, Default)]
+    struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for SharedWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn resize_flushes_in_band_size_reports() {
+        let (mut pane, _reader) = Pane::spawn(
+            10,
+            &["/bin/sh".to_string()],
+            None,
+            PaneDims {
+                cols: 20,
+                rows: 5,
+                cell_w: 8,
+                cell_h: 16,
+            },
+            None,
+        )
+        .unwrap();
+        let written = Arc::new(Mutex::new(Vec::new()));
+        pane.writer = Arc::new(Mutex::new(Box::new(SharedWriter(Arc::clone(&written)))));
+
+        // Programs such as Neovim enable in-band resize reports and then rely
+        // on them instead of SIGWINCH.
+        pane.feed(b"\x1b[?2048h").unwrap();
+        written.lock().unwrap().clear();
+
+        pane.resize(PaneDims {
+            cols: 100,
+            rows: 30,
+            cell_w: 10,
+            cell_h: 20,
+        })
+        .unwrap();
+        assert_eq!(
+            written.lock().unwrap().as_slice(),
+            b"\x1b[48;30;100;600;1000t"
+        );
+
+        pane.shutdown();
     }
 
     #[test]

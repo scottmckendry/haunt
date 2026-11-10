@@ -138,25 +138,6 @@ fn startup_config(result: Result<config::Config>) -> (config::Config, Option<Str
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn startup_config_uses_defaults_and_reports_errors() {
-        for text in ["shell = [", "reload_bind = 'bad+key'"] {
-            let (cfg, error) = startup_config(config::Config::parse(text));
-            assert_eq!(cfg.reload_bind.to_string(), "ctrl+shift+r");
-            assert_eq!(cfg.separator, ' ');
-            assert!(cfg.apps.is_empty());
-            assert!(error.unwrap().contains("config load failed:"));
-        }
-        let (cfg, error) = startup_config(config::Config::parse("separator = '|'"));
-        assert_eq!(cfg.separator, '|');
-        assert!(error.is_none());
-    }
-}
-
 struct Guard;
 
 impl Drop for Guard {
@@ -176,5 +157,24 @@ impl Drop for Guard {
             LeaveAlternateScreen
         );
         let _ = terminal::disable_raw_mode();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_config_uses_defaults_and_reports_errors() {
+        for text in ["shell = [", "reload_bind = 'bad+key'"] {
+            let (cfg, error) = startup_config(config::Config::parse(text));
+            assert_eq!(cfg.reload_bind.to_string(), "ctrl+shift+r");
+            assert_eq!(cfg.separator, ' ');
+            assert!(cfg.apps.is_empty());
+            assert!(error.unwrap().contains("config load failed:"));
+        }
+        let (cfg, error) = startup_config(config::Config::parse("separator = '|'"));
+        assert_eq!(cfg.separator, '|');
+        assert!(error.is_none());
     }
 }
