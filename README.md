@@ -77,7 +77,7 @@ bind = "ctrl+\\"
 cmd = ["nu", "-l"]
 ```
 
-Include every app you want to use in the config. `size` defaults to `half`; `full` is the other option. Commands are arrays of the executable and its arguments, not shell command strings. App names and bindings must be unique. Bindings support `ctrl`, `alt`, `shift`, and `super` modifiers, plus keys such as letters, `space`, `enter`, arrow keys and `f1`–`f24`.
+Include every app you want to use in the config. `size` defaults to `half`; `full` is the other option. Commands are arrays of the executable and its arguments, not shell command strings. App names and bindings must be unique. Bindings support `ctrl`, `alt` (also `option`/`opt`), `shift`, and `super` modifiers, plus keys such as letters, `space`, `enter`, arrow keys and `f1`–`f24`. On macOS, Option is reported as Alt only when the outer terminal sends it that way (in Ghostty, `macos-option-as-alt = true`); otherwise Option produces a composed character that cannot be used as a modifier.
 
 ## installation
 

@@ -93,9 +93,12 @@ pub fn encode(
         .set_unshifted_codepoint(unshifted)
         .set_utf8(text.clone());
 
-    encoder
-        .set_options_from_terminal(terminal)
-        .encode_to_vec(event, out)?;
+    encoder.set_options_from_terminal(terminal);
+    // `set_options_from_terminal` resets this to `False`. Haunt treats Option
+    // as Alt (sending an ESC prefix in legacy mode) like a normal terminal.
+    #[cfg(target_os = "macos")]
+    encoder.set_macos_option_as_alt(key::OptionAsAlt::True);
+    encoder.encode_to_vec(event, out)?;
 
     // If the encoder produced nothing for printable text, do not drop it.
     if out.is_empty()

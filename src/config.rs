@@ -391,6 +391,11 @@ mod tests {
         assert_eq!(chord.mods, KeyModifiers::CONTROL | KeyModifiers::ALT);
         assert_eq!(chord.key, KeyCode::Char('p'));
 
+        // macOS users can spell Alt as Option.
+        let chord = Chord::parse("ctrl+option+p").unwrap();
+        assert_eq!(chord.mods, KeyModifiers::CONTROL | KeyModifiers::ALT);
+        assert_eq!(chord.key, KeyCode::Char('p'));
+
         let chord = Chord::parse("ctrl+alt+space").unwrap();
         assert_eq!(chord.key, KeyCode::Char(' '));
 
