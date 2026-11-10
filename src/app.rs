@@ -1006,7 +1006,7 @@ fn hidden_area(size: Size, app_size: AppSize) -> Area {
 }
 
 fn paint_separator(out: &mut Vec<u8>, x: u16, rows: u16, separator: char) {
-    out.extend_from_slice(b"\x1b[0m\x1b]8;;\x1b\\");
+    out.extend_from_slice(b"\x1b[0;90m\x1b]8;;\x1b\\");
     for y in 0..rows {
         write!(
             out,
@@ -1216,12 +1216,12 @@ mod tests {
     }
 
     #[test]
-    fn separator_uses_default_style_and_each_row() {
+    fn separator_uses_bright_black_and_each_row() {
         let mut frame = Vec::new();
         paint_separator(&mut frame, 39, 2, '│');
         assert_eq!(
             frame,
-            "\x1b[0m\x1b]8;;\x1b\\\x1b[1;40H│\x1b[2;40H│".as_bytes()
+            "\x1b[0;90m\x1b]8;;\x1b\\\x1b[1;40H│\x1b[2;40H│".as_bytes()
         );
     }
 
