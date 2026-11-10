@@ -6,7 +6,8 @@
 
 ---
 
-https://github.com/user-attachments/assets/289af5ff-8717-4650-a9d8-f3b24bf01283
+https://github.com/user-attachments/assets/b64e2569-c693-4637-a6a9-f3e267d9d10e
+
 
 `haunt` is a small terminal multiplexer for Ghostty. It runs a main shell and lets you summon configured apps with direct keybinds. Hide an app and it keeps running; bring it back and pick up where you left off.
 
