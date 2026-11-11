@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.1](https://github.com/scottmckendry/haunt/compare/haunt-v0.3.0...haunt-v0.3.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* child process termination on shutdown ([864ad65](https://github.com/scottmckendry/haunt/commit/864ad651ba00232eae3652ac06e4a2c0fe7bb1d5))
+* mouse click-drag missing final event to pane ([4220258](https://github.com/scottmckendry/haunt/commit/42202581c19d9380db7e991de50532033f055fd2))
+* use bright black for separator chars ([a0fe0ae](https://github.com/scottmckendry/haunt/commit/a0fe0ae9ee45c149b31ddb6973ec69556d5c8594))
+
+
+### Performance Improvements
+
+* remove per-cell allocations, batch ffi calls ([4f68056](https://github.com/scottmckendry/haunt/commit/4f6805691da72a7b172b6942cd44c4fcaa53abed))
+
 ## [0.3.0](https://github.com/scottmckendry/haunt/compare/haunt-v0.2.0...haunt-v0.3.0) (2026-11-10)
 
 
