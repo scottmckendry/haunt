@@ -23,25 +23,83 @@ impl ChildGuard {
         };
 
         // portable-pty makes the child a session leader, so its pid is also
-        // the process-group id. Signal the group rather than only the leader:
-        // otherwise foreground and background descendants survive haunt.
+        // the session id. Interactive shells put each job in its own process
+        // group, so signalling only `-pid` would leave those jobs running.
+        // Signal every process still in the session instead.
         if let Some(pid) = child.process_id() {
-            let pgid = pid as libc::pid_t;
-            unsafe {
-                libc::kill(-pgid, libc::SIGHUP);
-            }
+            let sid = pid as libc::pid_t;
+            signal_session(sid, libc::SIGHUP);
             // Give shells and well-behaved jobs a moment to exit cleanly
             // before killing anything that ignored the hangup. Reap only
-            // after the final group signal so the pgid cannot be reused.
+            // after the final signal so the session id cannot be reused.
             std::thread::sleep(std::time::Duration::from_millis(100));
-            unsafe {
-                libc::kill(-pgid, libc::SIGKILL);
-            }
+            signal_session(sid, libc::SIGKILL);
         } else {
             let _ = child.kill();
         }
         let _ = child.wait();
     }
+}
+
+/// Signal the child's process group and every other process in its session.
+///
+/// Processes that call `setsid` themselves leave the session and are expected
+/// to survive; that is how a daemon detaches from its terminal.
+fn signal_session(sid: libc::pid_t, signal: libc::c_int) {
+    unsafe {
+        libc::kill(-sid, signal);
+    }
+    for pid in session_pids(sid) {
+        unsafe {
+            libc::kill(pid, signal);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn session_pids(sid: libc::pid_t) -> Vec<libc::pid_t> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse().ok())
+        .filter(|&pid| pid > 0 && unsafe { libc::getsid(pid) } == sid)
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "proc")]
+unsafe extern "C" {
+    fn proc_listallpids(buffer: *mut std::ffi::c_void, buffersize: libc::c_int) -> libc::c_int;
+}
+
+#[cfg(target_os = "macos")]
+fn session_pids(sid: libc::pid_t) -> Vec<libc::pid_t> {
+    let bytes = unsafe { proc_listallpids(std::ptr::null_mut(), 0) };
+    if bytes <= 0 {
+        return Vec::new();
+    }
+
+    let mut pids = vec![0; bytes as usize / std::mem::size_of::<libc::pid_t>() + 32];
+    let bytes = unsafe {
+        proc_listallpids(
+            pids.as_mut_ptr().cast(),
+            (pids.len() * std::mem::size_of::<libc::pid_t>()) as libc::c_int,
+        )
+    };
+    if bytes <= 0 {
+        return Vec::new();
+    }
+
+    pids.truncate((bytes as usize / std::mem::size_of::<libc::pid_t>()).min(pids.len()));
+    pids.retain(|&pid| pid > 0 && unsafe { libc::getsid(pid) } == sid);
+    pids
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn session_pids(_sid: libc::pid_t) -> Vec<libc::pid_t> {
+    Vec::new()
 }
 
 impl Drop for ChildGuard {
@@ -135,7 +193,9 @@ mod tests {
     fn shutdown_kills_descendants_that_ignore_hangup() {
         let path = std::env::temp_dir().join(format!("haunt-pty-test-{}", std::process::id()));
         let script = format!(
-            "trap '' HUP; sleep 30 & echo $! > '{}'; wait",
+            // Job control gives the background job its own process group, so
+            // signalling only the shell's group leaves it running.
+            "set -m; trap '' HUP; sleep 30 & echo $! > '{}'; wait",
             path.display()
         );
         std::fs::remove_file(&path).ok();
