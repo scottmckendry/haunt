@@ -92,6 +92,7 @@ pub struct App {
     last_notification_tick: Instant,
     outer_focus: bool,
     selecting: Option<u64>,
+    mouse_capture: Option<u64>,
     click: Option<ClickState>,
     last_autoscroll: Instant,
     pending_writes: Vec<u8>,
@@ -130,6 +131,7 @@ impl App {
             last_notification_tick: Instant::now(),
             outer_focus: true,
             selecting: None,
+            mouse_capture: None,
             click: None,
             last_autoscroll: Instant::now(),
             pending_writes: Vec::new(),
@@ -418,6 +420,10 @@ impl App {
     }
 
     fn on_eof(&mut self, id: u64) -> Result<()> {
+        if self.mouse_capture == Some(id) {
+            self.mouse_capture = None;
+        }
+
         if self.main.id == id {
             self.exit_code = self.main.wait()?;
             self.running = false;
@@ -590,6 +596,30 @@ impl App {
             return Ok(());
         }
 
+        // Application mouse reporting also captures the gesture: a drag or
+        // release outside the pane still belongs to the pane that received
+        // the press, so the app sees the release and cannot get stuck.
+        if let Some(id) = self.mouse_capture
+            && matches!(ev.kind, MouseEventKind::Drag(_) | MouseEventKind::Up(_))
+        {
+            let released = matches!(ev.kind, MouseEventKind::Up(_));
+            let sent = self
+                .pane_input_area(id)
+                .and_then(|area| self.pane_mut(id).map(|pane| pane.send_mouse(ev, area)));
+            if released || sent.is_none() {
+                self.mouse_capture = None;
+            }
+            if let Some(result) = sent {
+                result?;
+            }
+            return Ok(());
+        }
+
+        // Any new press starts a fresh gesture.
+        if matches!(ev.kind, MouseEventKind::Down(_)) {
+            self.mouse_capture = None;
+        }
+
         let Some((area, id)) = self.pane_at(ev.column, ev.row) else {
             return Ok(());
         };
@@ -624,7 +654,12 @@ impl App {
         };
 
         if !local && pane.tracks_mouse() {
-            return pane.send_mouse(ev, area);
+            let captured = matches!(ev.kind, MouseEventKind::Down(_));
+            let result = pane.send_mouse(ev, area);
+            if captured && result.is_ok() {
+                self.mouse_capture = Some(id);
+            }
+            return result;
         }
 
         match ev.kind {
@@ -736,6 +771,24 @@ impl App {
             .is_some_and(|pane| pane.id == id)
             .then_some(aux_area)
             .flatten()
+    }
+
+    fn pane_input_area(&self, id: u64) -> Option<Area> {
+        if self.main.id == id {
+            let visible_size = self.visible.map(|idx| self.cfg.apps[idx].size);
+            return Some(layout(self.size, visible_size).0);
+        }
+
+        let idx = self
+            .aux
+            .iter()
+            .position(|slot| slot.as_ref().is_some_and(|pane| pane.id == id))?;
+        if self.visible == Some(idx) {
+            return self.pane_area(id);
+        }
+        // Keep delivering a captured drag or release even if the pane was
+        // hidden mid-gesture, so the app can clear its button state.
+        Some(hidden_area(self.size, self.cfg.apps[idx].size))
     }
 
     fn pane_at(&self, x: u16, y: u16) -> Option<(Area, u64)> {
@@ -1213,6 +1266,38 @@ mod tests {
             osc7_sequence("host", Path::new("/tmp/a\nb")),
             b"\x1b]7;kitty-shell-cwd://host/tmp/ab\x07"
         );
+    }
+
+    #[test]
+    fn mouse_drag_and_release_stay_with_the_pressed_pane() {
+        let cfg = Config::parse("shell=['/bin/sh']").unwrap();
+        let (tx, _rx) = channel();
+        let mut app = App::new(cfg, size(40, 10), None, tx).unwrap();
+        app.main.feed(b"\x1b[?1000h\x1b[?1006h").unwrap();
+
+        let mouse = |kind, column, row| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        app.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 1, 1))
+            .unwrap();
+        assert_eq!(app.mouse_capture, Some(app.main.id));
+        assert!(app.main.mouse_down());
+
+        // Both events land outside the pane and even outside the terminal.
+        app.on_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 100, 100))
+            .unwrap();
+        assert_eq!(app.mouse_capture, Some(app.main.id));
+
+        app.on_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 100, 100))
+            .unwrap();
+        assert_eq!(app.mouse_capture, None);
+        assert!(!app.main.mouse_down());
+
+        app.shutdown();
     }
 
     #[test]

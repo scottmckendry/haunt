@@ -496,6 +496,11 @@ impl Pane {
         self.term.is_mouse_tracking().unwrap_or(false)
     }
 
+    #[cfg(test)]
+    pub(crate) fn mouse_down(&self) -> bool {
+        self.mouse_down
+    }
+
     /// Encode a mouse event for this pane and write it to the PTY.
     ///
     /// `ev` is in outer-terminal cells; `area` is the pane's rectangle, used
