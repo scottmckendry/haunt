@@ -10,7 +10,6 @@ mod config;
 mod graphics;
 mod input;
 mod notification;
-mod osc;
 mod paint;
 mod pane;
 mod pty;

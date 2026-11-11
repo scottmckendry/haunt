@@ -22,9 +22,8 @@ use crate::{
     graphics::Graphics,
     input,
     notification::{self, Notification, NotificationKind},
-    osc,
     paint::Area,
-    pane::{Pane, PaneDims, SelectKind},
+    pane::{Pane, PaneDims, Progress, SelectKind},
     theme::Theme,
 };
 
@@ -99,7 +98,7 @@ pub struct App {
     frame_buf: Vec<u8>,
     last_title: Option<String>,
     last_cwd: Option<PathBuf>,
-    last_progress: Option<osc::Progress>,
+    last_progress: Option<Progress>,
     hostname: String,
 }
 
@@ -800,7 +799,7 @@ impl App {
                 .is_some_and(|pane| pane.dirty)
     }
 
-    fn aggregate_progress(&self) -> Option<osc::Progress> {
+    fn aggregate_progress(&self) -> Option<Progress> {
         aggregate_progress(
             std::iter::once(self.main.progress())
                 .chain(self.aux.iter().flatten().map(Pane::progress))
@@ -1047,8 +1046,8 @@ fn dims_of(size: Size, area: Area) -> PaneDims {
 
 /// Pick the most significant progress across panes; ties use the higher
 /// percentage.
-fn aggregate_progress(progress: impl Iterator<Item = osc::Progress>) -> Option<osc::Progress> {
-    let mut best: Option<osc::Progress> = None;
+fn aggregate_progress(progress: impl Iterator<Item = Progress>) -> Option<Progress> {
+    let mut best: Option<Progress> = None;
     for progress in progress {
         let better = match best {
             None => true,
@@ -1244,7 +1243,7 @@ mod tests {
 
     #[test]
     fn progress_aggregation_prefers_significance_then_percent() {
-        use osc::{Progress, ProgressState};
+        use crate::pane::ProgressState;
 
         let set = |percent| Progress {
             state: ProgressState::Set,

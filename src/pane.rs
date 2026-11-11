@@ -19,7 +19,8 @@ use libghostty_vt::{
     terminal::{
         ClipboardLocation, ClipboardWrite, ConformanceLevel, DeviceAttributeFeature,
         DeviceAttributes, DeviceType, Mode, Point, PointCoordinate, PrimaryDeviceAttributes,
-        ScrollViewport, SecondaryDeviceAttributes, SizeReportSize,
+        ProgressState as VtProgressState, ScrollViewport, SecondaryDeviceAttributes,
+        SizeReportSize,
     },
 };
 use portable_pty::{MasterPty, PtySize};
@@ -28,11 +29,44 @@ use crate::{
     base64,
     graphics::Graphics,
     input,
-    osc::{self, Event, ProgressUpdate},
     paint::{self, Area, PaintState},
     pty,
     theme::Theme,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgressState {
+    Set,
+    Error,
+    Indeterminate,
+    Pause,
+}
+
+impl ProgressState {
+    /// Higher wins when several panes report progress.
+    pub fn priority(self) -> u8 {
+        match self {
+            Self::Error => 3,
+            Self::Indeterminate => 2,
+            Self::Set | Self::Pause => 1,
+        }
+    }
+
+    pub fn code(self) -> u8 {
+        match self {
+            Self::Set => 1,
+            Self::Error => 2,
+            Self::Indeterminate => 3,
+            Self::Pause => 4,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Progress {
+    pub state: ProgressState,
+    pub percent: Option<u8>,
+}
 
 /// Per-pane cap on libghostty's Kitty image storage. This bounds the memory
 /// used by images a pane can retain without silently dropping smaller images.
@@ -61,6 +95,12 @@ pub enum SelectKind {
     Cell,
     Word,
     Line,
+}
+
+#[derive(Default)]
+struct ProgressTracking {
+    current: Option<Progress>,
+    changed: bool,
 }
 
 struct SelectionState {
@@ -124,9 +164,7 @@ pub struct Pane {
     effects: Arc<Mutex<Vec<u8>>>,
     title: Arc<Mutex<Option<String>>>,
     dims: Arc<Mutex<PaneDims>>,
-    osc: osc::Scanner,
-    progress: Option<osc::Progress>,
-    progress_changed: bool,
+    progress: Arc<Mutex<ProgressTracking>>,
     mouse_encoder: mouse::Encoder<'static>,
     mouse_event: mouse::Event<'static>,
     mouse_down: bool,
@@ -169,6 +207,7 @@ impl Pane {
         let effects = Arc::new(Mutex::new(Vec::<u8>::new()));
         let title = Arc::new(Mutex::new(None::<String>));
         let dims_shared = Arc::new(Mutex::new(dims));
+        let progress = Arc::new(Mutex::new(ProgressTracking::default()));
 
         let mut term: Terminal<'static, 'static> = Terminal::new(dims.cols, dims.rows)?;
         term.set_scrollback_max_bytes(Some(usize::MAX))?;
@@ -200,6 +239,57 @@ impl Pane {
             term.on_clipboard_write(move |_term, write| {
                 forward_clipboard(&effects, &write);
                 write.reply(Ok(()), false);
+            })?;
+        }
+        {
+            let effects = Arc::clone(&effects);
+            term.on_desktop_notification(move |_term, notification| {
+                let mut out = effects.lock().unwrap();
+                let title = notification.title();
+                // OSC 9;4 is progress, not a notification. An OSC 777
+                // notification with an empty title can still have that body.
+                if title.is_empty() && !notification.body().starts_with(b"4;") {
+                    out.extend_from_slice(b"\x1b]9;");
+                } else {
+                    out.extend_from_slice(b"\x1b]777;notify;");
+                    // A semicolon separates the title from the body in OSC 777.
+                    out.extend(
+                        title
+                            .iter()
+                            .copied()
+                            .filter(|b| *b >= 0x20 && *b != 0x7f)
+                            .map(|b| if b == b';' { b' ' } else { b }),
+                    );
+                    out.push(b';');
+                }
+                out.extend(
+                    notification
+                        .body()
+                        .iter()
+                        .copied()
+                        .filter(|b| *b >= 0x20 && *b != 0x7f),
+                );
+                out.push(0x07);
+            })?;
+        }
+        {
+            let progress = Arc::clone(&progress);
+            term.on_progress_report(move |_term, report| {
+                let Ok(state) = report.state() else { return };
+                let state = match state {
+                    VtProgressState::Remove => None,
+                    VtProgressState::Set => Some(ProgressState::Set),
+                    VtProgressState::Error => Some(ProgressState::Error),
+                    VtProgressState::Indeterminate => Some(ProgressState::Indeterminate),
+                    VtProgressState::Pause => Some(ProgressState::Pause),
+                    _ => return,
+                };
+                let mut progress = progress.lock().unwrap();
+                progress.current = state.map(|state| Progress {
+                    state,
+                    percent: report.progress(),
+                });
+                progress.changed = true;
             })?;
         }
         {
@@ -265,9 +355,7 @@ impl Pane {
                 effects,
                 title,
                 dims: dims_shared,
-                osc: osc::Scanner::default(),
-                progress: None,
-                progress_changed: false,
+                progress,
                 mouse_encoder: mouse::Encoder::new()?,
                 mouse_event: mouse::Event::new()?,
                 mouse_down: false,
@@ -283,22 +371,6 @@ impl Pane {
 
     /// Feed bytes read from the PTY into the terminal and answer any queries.
     pub fn feed(&mut self, bytes: &[u8]) -> Result<()> {
-        for event in self.osc.feed(bytes) {
-            match event {
-                Event::Progress(ProgressUpdate::Set(progress)) => {
-                    self.progress = Some(progress);
-                    self.progress_changed = true;
-                }
-                Event::Progress(ProgressUpdate::Remove) => {
-                    self.progress = None;
-                    self.progress_changed = true;
-                }
-                Event::Notification(sequence) => {
-                    self.effects.lock().unwrap().extend_from_slice(&sequence);
-                }
-            }
-        }
-
         self.term.vt_write(bytes);
         self.dirty = true;
         self.flush_responses()?;
@@ -342,8 +414,8 @@ impl Pane {
     }
 
     /// Current OSC 9;4 progress reported by the child, if any.
-    pub fn progress(&self) -> Option<osc::Progress> {
-        self.progress
+    pub fn progress(&self) -> Option<Progress> {
+        self.progress.lock().unwrap().current
     }
 
     /// Whether the child reported progress since the last call.
@@ -351,7 +423,7 @@ impl Pane {
     /// Keepalives matter: Ghostty expires progress that is not refreshed, and
     /// apps may re-send the same indeterminate report every second.
     pub fn take_progress_changed(&mut self) -> bool {
-        std::mem::take(&mut self.progress_changed)
+        std::mem::take(&mut self.progress.lock().unwrap().changed)
     }
 
     pub fn resize(&mut self, dims: PaneDims) -> Result<()> {
@@ -984,8 +1056,21 @@ mod tests {
         pane.feed(b"\x1b]9;build done\x07").unwrap();
         assert_eq!(pane.take_effects(), b"\x1b]9;build done\x07");
 
-        pane.feed(b"\x1b]777;notify;title;body\x1b\\").unwrap();
-        assert_eq!(pane.take_effects(), b"\x1b]777;notify;title;body\x1b\\");
+        pane.feed(b"\x1b]777;notify;title;").unwrap();
+        assert!(pane.take_effects().is_empty());
+        pane.feed(b"body\x1b\\").unwrap();
+        assert_eq!(pane.take_effects(), b"\x1b]777;notify;title;body\x07");
+
+        pane.feed(b"\x1b]777;notify;;4;1;50\x07").unwrap();
+        assert_eq!(pane.take_effects(), b"\x1b]777;notify;;4;1;50\x07");
+
+        // Effects remain in their original order, including across OSCs.
+        pane.feed(b"\x07\x1b]9;done\x07\x07").unwrap();
+        assert_eq!(pane.take_effects(), b"\x07\x1b]9;done\x07\x07");
+
+        // Cancelled OSCs must not become notifications.
+        pane.feed(b"\x1b]9;cancelled\x18\x07").unwrap();
+        assert_eq!(pane.take_effects(), b"\x07");
 
         pane.shutdown();
     }
@@ -1009,11 +1094,13 @@ mod tests {
         assert_eq!(pane.progress(), None);
         assert!(!pane.take_progress_changed());
 
-        pane.feed(b"\x1b]9;4;1;40\x07").unwrap();
+        pane.feed(b"\x1b]9;4;1;").unwrap();
+        assert!(!pane.take_progress_changed());
+        pane.feed(b"40\x07").unwrap();
         assert_eq!(
             pane.progress(),
-            Some(osc::Progress {
-                state: osc::ProgressState::Set,
+            Some(Progress {
+                state: ProgressState::Set,
                 percent: Some(40),
             })
         );
@@ -1022,9 +1109,23 @@ mod tests {
         pane.feed(b"\x1b]9;4;1;40\x07").unwrap();
         assert!(pane.take_progress_changed());
 
+        for (sequence, state, percent) in [
+            (&b"\x1b]9;4;2;25\x07"[..], ProgressState::Error, Some(25)),
+            (&b"\x1b]9;4;3\x1b\\"[..], ProgressState::Indeterminate, None),
+            (&b"\x1b]9;4;4;75\x07"[..], ProgressState::Pause, Some(75)),
+        ] {
+            pane.feed(sequence).unwrap();
+            assert_eq!(pane.progress(), Some(Progress { state, percent }));
+            assert!(pane.take_progress_changed());
+        }
+
         pane.feed(b"\x1b]9;4;0\x07").unwrap();
         assert_eq!(pane.progress(), None);
         assert!(pane.take_progress_changed());
+
+        pane.feed(b"\x1b]9;4;1;40\x18\x07").unwrap();
+        assert_eq!(pane.progress(), None);
+        assert!(!pane.take_progress_changed());
 
         pane.shutdown();
     }
