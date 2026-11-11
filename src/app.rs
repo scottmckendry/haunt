@@ -96,6 +96,7 @@ pub struct App {
     click: Option<ClickState>,
     last_autoscroll: Instant,
     pending_writes: Vec<u8>,
+    frame_buf: Vec<u8>,
     last_title: Option<String>,
     last_cwd: Option<PathBuf>,
     last_progress: Option<osc::Progress>,
@@ -133,6 +134,7 @@ impl App {
             click: None,
             last_autoscroll: Instant::now(),
             pending_writes: Vec::new(),
+            frame_buf: Vec::with_capacity(32 * 1024),
             last_title: None,
             last_cwd: None,
             last_progress: None,
@@ -209,24 +211,32 @@ impl App {
         let (main_area, aux_area) = layout(self.size, visible_size);
         let full_aux = visible_size == Some(AppSize::Full);
 
-        let mut frame = Vec::with_capacity(32 * 1024);
+        // Reuse the frame buffer: a full repaint can be tens of kilobytes, and
+        // at 60 Hz a fresh allocation per frame adds avoidable churn.
+        let mut frame = std::mem::take(&mut self.frame_buf);
+        frame.clear();
         frame.extend_from_slice(b"\x1b[?2026h");
 
-        let visible: Vec<u64> = match (self.visible, full_aux) {
+        let mut visible_ids = [self.main.id; 2];
+        let visible: &[u64] = match (self.visible, full_aux) {
             (Some(v), true) => match self.aux[v].as_ref() {
-                Some(pane) => vec![pane.id],
-                None => vec![self.main.id],
+                Some(pane) => {
+                    visible_ids[0] = pane.id;
+                    &visible_ids[..1]
+                }
+                None => &visible_ids[..1],
             },
             (Some(v), false) => {
-                let mut ids = vec![self.main.id];
                 if let Some(pane) = self.aux[v].as_ref() {
-                    ids.push(pane.id);
+                    visible_ids[1] = pane.id;
+                    &visible_ids
+                } else {
+                    &visible_ids[..1]
                 }
-                ids
             }
-            (None, _) => vec![self.main.id],
+            (None, _) => &visible_ids[..1],
         };
-        self.graphics.begin_frame(&visible, &mut frame);
+        self.graphics.begin_frame(visible, &mut frame);
 
         if visible_size == Some(AppSize::Half) && self.size.cols >= 3 {
             paint_separator(&mut frame, main_area.w, self.size.rows, self.cfg.separator);
@@ -287,6 +297,13 @@ impl App {
         out.write_all(&frame)?;
         out.flush()?;
         self.frame_dirty = false;
+        // Keep the buffer for reuse, but do not pin memory after an unusually
+        // large frame such as a base64-encoded image transfer.
+        self.frame_buf = if frame.capacity() <= 256 * 1024 {
+            frame
+        } else {
+            Vec::with_capacity(32 * 1024)
+        };
         Ok(())
     }
 

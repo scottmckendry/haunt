@@ -9,7 +9,7 @@ use anyhow::Result;
 use libghostty_vt::{
     Error, Terminal,
     render::{CellIterator, CursorVisualStyle, RowIterator, Snapshot},
-    screen::CellWide,
+    screen::{CellWide, cell},
     style::{RgbColor, Style, StyleColor, Underline},
     terminal::{Point, PointCoordinate},
     unicode,
@@ -73,6 +73,7 @@ pub fn draw<'a>(
             continue;
         }
 
+        let selection = row.selection()?;
         let mut cell_iter = cell_it.update(row)?;
         let mut x = 0u16;
         let mut cur_col: Option<u16> = None;
@@ -82,22 +83,30 @@ pub fn draw<'a>(
                 break;
             }
 
-            let style = if cell.has_styling()? {
+            // OSC 8 hyperlinks and placeholder IDs are not part of the
+            // render state, so resolve them through the raw cell. Batch the
+            // raw queries so each cell crosses the FFI boundary once.
+            let raw = cell.raw_cell()?;
+            let (codepoint, wide, has_styling, has_hyperlink) = raw.get_multi((
+                cell::Codepoint,
+                cell::Wide,
+                cell::HasStyling,
+                cell::HasHyperlink,
+            ))?;
+
+            let style = if has_styling {
                 cell.style()?
             } else {
                 Style::default()
             };
 
-            // OSC 8 hyperlinks and placeholder IDs are not part of the
-            // render state, so resolve them through the raw cell.
-            let raw = cell.raw_cell()?;
             // The tail cell of a wide glyph has no content of its own: the
             // preceding wide cell already advanced x past both columns. Skip
             // it so we don't paint a redundant blank after the wide glyph.
-            if matches!(raw.wide()?, CellWide::SpacerTail) {
+            if matches!(wide, CellWide::SpacerTail) {
                 continue;
             }
-            let placeholder = raw.codepoint()? == PLACEHOLDER;
+            let placeholder = codepoint == PLACEHOLDER;
             let fg = if placeholder {
                 match placeholder_outer_id(graphics, pane_id, &style) {
                     Some(id) => Some(image_id_color(id)),
@@ -106,9 +115,10 @@ pub fn draw<'a>(
             } else {
                 cell.fg_color()?
             };
-            let sgr = sgr_for(state, &style, fg, cell.bg_color()?, cell.is_selected()?);
+            let selected = selection.is_some_and(|range| x >= range.start_x && x <= range.end_x);
+            let sgr = sgr_for(state, &style, fg, cell.bg_color()?, selected);
 
-            let uri = if raw.has_hyperlink()? {
+            let uri = if has_hyperlink {
                 hyperlink_uri(term, x, y as u32)?
             } else {
                 None
@@ -326,62 +336,90 @@ fn sgr_for(
 fn emit_sgr(out: &mut Vec<u8>, sgr: &Sgr) {
     // Reset first: simpler and avoids leaking state between cells. SGR 0 also
     // returns the background to the terminal default, preserving transparency.
-    let mut params: Vec<String> = vec!["0".to_string()];
+    out.extend_from_slice(b"\x1b[0");
 
     if sgr.bold {
-        params.push("1".into());
+        out.extend_from_slice(b";1");
     }
     if sgr.faint {
-        params.push("2".into());
+        out.extend_from_slice(b";2");
     }
     if sgr.italic {
-        params.push("3".into());
+        out.extend_from_slice(b";3");
     }
     match sgr.underline {
         0 => {}
-        1 => params.push("4".into()),
+        1 => out.extend_from_slice(b";4"),
         // SGR 4:<style> uses the same numbering as Ghostty's underline enum:
         // 1 single, 2 double, 3 curly, 4 dotted, 5 dashed.
-        n => params.push(format!("4:{n}")),
+        n => {
+            out.extend_from_slice(b";4:");
+            push_dec(out, u32::from(n));
+        }
     }
     if sgr.blink {
-        params.push("5".into());
+        out.extend_from_slice(b";5");
     }
     if sgr.inverse {
-        params.push("7".into());
+        out.extend_from_slice(b";7");
     }
     if sgr.invisible {
-        params.push("8".into());
+        out.extend_from_slice(b";8");
     }
     if sgr.strikethrough {
-        params.push("9".into());
+        out.extend_from_slice(b";9");
     }
     if sgr.overline {
-        params.push("53".into());
+        out.extend_from_slice(b";53");
     }
 
-    match sgr.fg {
-        Some(c) => params.push(format!("38;2;{};{};{}", c.r, c.g, c.b)),
-        None => params.push("39".into()),
+    if let Some(c) = sgr.fg {
+        out.extend_from_slice(b";38;2;");
+        push_color(out, c);
     }
-    match sgr.bg {
-        Some(c) => params.push(format!("48;2;{};{};{}", c.r, c.g, c.b)),
-        None => params.push("49".into()),
+    if let Some(c) = sgr.bg {
+        out.extend_from_slice(b";48;2;");
+        push_color(out, c);
     }
     if let Some(c) = sgr.ul {
-        params.push(format!("58;2;{};{};{}", c.r, c.g, c.b));
+        out.extend_from_slice(b";58;2;");
+        push_color(out, c);
     }
 
-    out.extend_from_slice(b"\x1b[");
-    out.extend_from_slice(params.join(";").as_bytes());
     out.push(b'm');
+}
+
+fn push_color(out: &mut Vec<u8>, c: RgbColor) {
+    push_dec(out, u32::from(c.r));
+    out.push(b';');
+    push_dec(out, u32::from(c.g));
+    out.push(b';');
+    push_dec(out, u32::from(c.b));
+}
+
+fn push_dec(out: &mut Vec<u8>, mut n: u32) {
+    let mut buf = [0u8; 10];
+    let mut i = buf.len();
+    loop {
+        i -= 1;
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    out.extend_from_slice(&buf[i..]);
 }
 
 fn move_to(out: &mut Vec<u8>, y: u16, x: u16, cur_col: &mut Option<u16>) {
     if *cur_col == Some(x) {
         return;
     }
-    out.extend_from_slice(format!("\x1b[{};{}H", y + 1, x + 1).as_bytes());
+    out.extend_from_slice(b"\x1b[");
+    push_dec(out, u32::from(y) + 1);
+    out.push(b';');
+    push_dec(out, u32::from(x) + 1);
+    out.push(b'H');
     *cur_col = Some(x);
 }
 
@@ -643,7 +681,7 @@ mod tests {
         .unwrap();
 
         let text = String::from_utf8_lossy(&out);
-        assert!(text.contains("\x1b[0;7;"), "inverse missing: {text:?}");
+        assert!(text.contains("\x1b[0;7m"), "inverse missing: {text:?}");
     }
 
     #[test]
