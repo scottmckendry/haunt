@@ -8,6 +8,11 @@
 //! Ghostty's image storage. Placements are deleted and re-created whenever a
 //! pane's visible placement geometry changes (scroll, resize, reveal), but not
 //! on every frame: cell repaints alone leave placements untouched.
+//!
+//! The inner terminal keeps image storage per screen, and only the active
+//! screen's images are drawn, so a screen switch (a full-screen program
+//! entering or leaving the alternate screen) drops everything forwarded for
+//! the screen the pane just left.
 
 use std::collections::HashMap;
 
@@ -15,6 +20,7 @@ use anyhow::Result;
 use libghostty_vt::{
     Terminal,
     kitty::graphics::{Image, ImageFormat, PlacementIterator, PlacementRenderInfo},
+    screen::Screen,
 };
 
 use crate::{base64, paint::Area};
@@ -40,6 +46,10 @@ pub struct Graphics {
 struct PaneGraphics {
     images: HashMap<u32, ImageState>,
     placements: Vec<PlacementSig>,
+    /// The screen whose storage was last forwarded. A pane on the alternate
+    /// screen has nothing in common with its primary-screen images: the inner
+    /// terminal numbers them independently, so the mapping cannot carry over.
+    screen: Screen,
 }
 
 #[derive(Clone, Copy)]
@@ -141,6 +151,23 @@ impl Graphics {
             return Ok(false);
         }
 
+        // A screen switch replaces what the pane shows, but nothing in the new
+        // screen's storage refers to the images forwarded for the old one, so
+        // without this the outer Ghostty would keep drawing them: a full-screen
+        // program would open underneath the launch banner's ghost. Delete them
+        // now rather than from the next frame, so no frame shows both.
+        let screen = term.active_screen()?;
+        if self
+            .panes
+            .get(&pane_id)
+            .is_some_and(|pane| pane.screen != screen)
+            && let Some(pane) = self.panes.remove(&pane_id)
+        {
+            for image in pane.images.values() {
+                delete(out, 'I', image.outer_id);
+            }
+        }
+
         let Some(storage) = term.kitty_graphics()? else {
             return Ok(false);
         };
@@ -203,6 +230,7 @@ impl Graphics {
         }
 
         let pane = self.panes.entry(pane_id).or_default();
+        pane.screen = screen;
         let old_virtual: Vec<PlacementSig> = pane
             .placements
             .iter()
@@ -677,6 +705,45 @@ mod tests {
         assert!(text.contains("a=p,i=1"), "{text:?}");
         assert!(text.contains("c=1,"), "not clipped: {text:?}");
         assert!(text.contains("w=1,"), "source not cropped: {text:?}");
+    }
+
+    #[test]
+    fn switching_screens_drops_forwarded_images() {
+        let mut term = terminal();
+        term.vt_write(b"\x1b_Ga=t,f=24,s=1,v=1,i=7;/wAA\x1b\\\x1b_Ga=p,i=7\x1b\\");
+
+        let mut graphics = Graphics::new().unwrap();
+        let mut out = Vec::new();
+        graphics
+            .draw_pane(1, &term, &mut out, area(0, 0, 20, 10))
+            .unwrap();
+        out.clear();
+
+        // A full-screen program enters the alternate screen, whose storage is
+        // empty. The primary screen's ghost must still be removed.
+        term.vt_write(b"\x1b[?1049h");
+        graphics
+            .draw_pane(1, &term, &mut out, area(0, 0, 20, 10))
+            .unwrap();
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.contains("a=d,d=I,i=1"), "{text:?}");
+
+        // Every frame after the switch is quiet again.
+        out.clear();
+        graphics
+            .draw_pane(1, &term, &mut out, area(0, 0, 20, 10))
+            .unwrap();
+        assert!(out.is_empty(), "{:?}", String::from_utf8_lossy(&out));
+
+        // Leaving the alternate screen brings the ghost back, re-sent because
+        // its forwarded data went away with the switch.
+        term.vt_write(b"\x1b[?1049l");
+        graphics
+            .draw_pane(1, &term, &mut out, area(0, 0, 20, 10))
+            .unwrap();
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.contains("a=t,f=32,s=1,v=1,i=2"), "{text:?}");
+        assert!(text.contains("a=p,i=2"), "{text:?}");
     }
 
     #[test]
