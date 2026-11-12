@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.4.0](https://github.com/scottmckendry/haunt/compare/haunt-v0.3.1...haunt-v0.4.0) (2026-11-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* **config:** use named tables for apps
+
+### Features
+
+* add launch message and mascot ([12d6963](https://github.com/scottmckendry/haunt/commit/12d69633222d3fa1e7cd812e44334fb2fc8675ff))
+* **banner:** more minimal with no cpu/mem details ([e0a45a5](https://github.com/scottmckendry/haunt/commit/e0a45a519581e8a9790eadf5eb0be6bca2fa0897))
+* resize panes with click-drag ([8a07f43](https://github.com/scottmckendry/haunt/commit/8a07f430f9d4ba6838b124a7fd613e45ced3e2af))
+
+
+### Bug Fixes
+
+* **banner:** ghost persists into tui apps ([9899c15](https://github.com/scottmckendry/haunt/commit/9899c1569063b7266a7389af2f61b7a9faf45470))
+* **graphics:** invalid image placement/offsets ([178717b](https://github.com/scottmckendry/haunt/commit/178717bebe637130ac7a2a35d96507d05f91bd4a))
+* unnecessary cast error ([b6353e1](https://github.com/scottmckendry/haunt/commit/b6353e116bbea142c9418d27896d35b48617754d))
+
+
+### Code Refactoring
+
+* **config:** use named tables for apps ([5a3cca1](https://github.com/scottmckendry/haunt/commit/5a3cca16c2fe1e360c8ff3a346c6f79d897b5268))
+
 ## [0.3.1](https://github.com/scottmckendry/haunt/compare/haunt-v0.3.0...haunt-v0.3.1) (2026-11-11)
 
 
