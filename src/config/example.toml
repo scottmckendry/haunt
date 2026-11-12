@@ -1,0 +1,8 @@
+# Configuration: https://github.com/scottmckendry/haunt
+# Set to false to hide the launch banner: the ghost and the machine lines.
+# banner = false
+# Uncomment and customize this example to add an app.
+# [apps.lazygit]
+# bind = "ctrl+alt+g"
+# cmd = ["lazygit"]
+# size = "full"

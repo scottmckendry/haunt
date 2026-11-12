@@ -426,7 +426,11 @@ mod tests {
 
     #[test]
     fn hotkey_overlay_lists_current_bindings_and_sanitizes_names() {
-        let cfg = Config::parse("help_bind='alt+f1'\nreload_bind='alt+r'\n[[app]]\nname=\"test\\u001b[31m\"\nbind='ctrl+t'\ncmd=['test']").unwrap();
+        let cfg = Config::parse(
+            "help_bind='alt+f1'\nreload_bind='alt+r'\n\
+             [apps.\"test\\u001b[31m\"]\nbind='ctrl+t'\ncmd=['test']",
+        )
+        .unwrap();
         let lines = help_lines(&cfg);
         assert_eq!(lines[0].text.len(), 32);
         assert!(lines[0].text.ends_with(". help"));

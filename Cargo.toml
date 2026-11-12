@@ -7,6 +7,7 @@ repository = "https://github.com/scottmckendry/haunt"
 [dependencies]
 anyhow = "1"
 crossterm = "0.29"
+indexmap = { version = "2", features = ["serde"] }
 libc = "0.2"
 libghostty-vt = { git = "https://github.com/Uzaaft/libghostty-rs", rev = "768add93c54ccdba3f5c4d8763789ab6416f3151", features = [
   "pkg-config",
@@ -15,7 +16,7 @@ libghostty-vt = { git = "https://github.com/Uzaaft/libghostty-rs", rev = "768add
 portable-pty = "0.9"
 serde = { version = "1", features = ["derive"] }
 signal-hook = "0.3"
-toml = "0.9"
+toml = { version = "0.9", features = ["preserve_order"] }
 
 [profile.dist]
 inherits = "release"

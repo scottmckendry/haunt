@@ -1285,13 +1285,19 @@ mod tests {
 
     #[test]
     fn reload_maps_by_name_and_rejects_removing_running_apps() {
-        let old = Config::parse("[[app]]\nname='a'\nbind='ctrl+a'\ncmd=['a']\n[[app]]\nname='b'\nbind='ctrl+b'\ncmd=['b']").unwrap();
-        let new = Config::parse("[[app]]\nname='b'\nbind='ctrl+c'\ncmd=['new']\n[[app]]\nname='a'\nbind='ctrl+a'\ncmd=['a']\n[[app]]\nname='c'\nbind='ctrl+d'\ncmd=['c']").unwrap();
+        let old =
+            Config::parse("[apps.a]\nbind='ctrl+a'\ncmd=['a']\n[apps.b]\nbind='ctrl+b'\ncmd=['b']")
+                .unwrap();
+        let new = Config::parse(
+            "[apps.b]\nbind='ctrl+c'\ncmd=['new']\n[apps.a]\nbind='ctrl+a'\ncmd=['a']\n\
+             [apps.c]\nbind='ctrl+d'\ncmd=['c']",
+        )
+        .unwrap();
         assert_eq!(
             reload_mapping(&old, &new, &[true, true]).unwrap(),
             vec![Some(1), Some(0), None]
         );
-        let removed = Config::parse("[[app]]\nname='b'\nbind='ctrl+b'\ncmd=['b']").unwrap();
+        let removed = Config::parse("[apps.b]\nbind='ctrl+b'\ncmd=['b']").unwrap();
         assert!(reload_mapping(&old, &removed, &[true, false]).is_err());
         assert_eq!(
             reload_mapping(&old, &removed, &[false, true]).unwrap(),
@@ -1450,7 +1456,7 @@ mod tests {
     #[test]
     fn dragging_the_separator_resizes_the_split() {
         let cfg = Config::parse(
-            "shell=['/bin/sh']\n[[app]]\nname='a'\nbind='ctrl+a'\ncmd=['/bin/sh']\nsize='half'",
+            "shell=['/bin/sh']\n[apps.a]\nbind='ctrl+a'\ncmd=['/bin/sh']\nsize='half'",
         )
         .unwrap();
         let (tx, _rx) = channel();
