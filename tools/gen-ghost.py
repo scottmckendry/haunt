@@ -33,7 +33,7 @@ import sys
 import zlib
 from collections import deque
 
-GRID = 9  # device pixels per grid cell
+GRID = 7  # device pixels per grid cell, matching the README banner's ghost
 
 PALETTE = (
     (0, 0, 0, 0),     # 0 empty
