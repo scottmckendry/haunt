@@ -19,6 +19,8 @@ use crate::shell;
 
 const EXAMPLE_CONFIG: &str = "\
 # Configuration: https://github.com/scottmckendry/haunt\n\
+# Set to false to hide the launch banner: the ghost and the machine lines.\n\
+# banner = false\n\
 # Uncomment and customize this example to add an app.\n\
 # [[app]]\n\
 # name = \"lazygit\"\n\
@@ -171,6 +173,7 @@ pub struct Config {
     pub help_bind: Option<Chord>,
     pub shell: Vec<String>,
     pub separator: char,
+    pub banner: bool,
     pub apps: Vec<AppConfig>,
 }
 
@@ -303,6 +306,7 @@ impl Config {
             help_bind,
             shell,
             separator,
+            banner: raw.banner.unwrap_or(true),
             apps,
         })
     }
@@ -337,6 +341,8 @@ struct RawConfig {
     shell: Option<Vec<String>>,
     #[serde(default)]
     separator: Option<String>,
+    #[serde(default)]
+    banner: Option<bool>,
     #[serde(default)]
     app: Vec<RawApp>,
 }

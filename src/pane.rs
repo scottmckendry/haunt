@@ -390,6 +390,14 @@ impl Pane {
         std::mem::take(&mut self.focus_events_pending)
     }
 
+    /// The pane's cursor, in viewport cells.
+    pub fn cursor(&self) -> (u16, u16) {
+        (
+            self.term.cursor_x().unwrap_or(0),
+            self.term.cursor_y().unwrap_or(0),
+        )
+    }
+
     /// Whether a terminal mode is enabled by the inner program.
     pub fn mode(&self, mode: Mode) -> bool {
         self.term.mode(mode).unwrap_or(false)

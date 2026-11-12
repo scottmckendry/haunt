@@ -5,10 +5,12 @@
 //! native features.
 
 mod app;
+mod banner;
 mod base64;
 mod config;
 mod graphics;
 mod input;
+mod machine;
 mod notification;
 mod paint;
 mod pane;

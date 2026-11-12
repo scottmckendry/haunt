@@ -1,13 +1,10 @@
-<h1 align="center">haunt</h1>
-
 <p align="center">
-  <i>muxed persistent processes that 'haunt' your terminal</i>
+  <img src="assets/haunt-banner.svg" alt="haunt — muxed persistent processes that haunt your terminal" width="960" />
 </p>
 
 ---
 
 https://github.com/user-attachments/assets/b64e2569-c693-4637-a6a9-f3e267d9d10e
-
 
 `haunt` is a small terminal multiplexer for Ghostty. It runs a main shell and lets you summon configured apps with direct keybinds. Hide an app and it keeps running; bring it back and pick up where you left off.
 
@@ -58,6 +55,8 @@ reload_bind = "ctrl+shift+r"
 help_bind = "ctrl+shift+h"
 # Optional; defaults to a space. Must be one printable, one-cell character.
 separator = "│"
+# Optional; defaults to true. Show the launch banner: the ghost and the machine lines.
+banner = false
 
 [[app]]
 name = "pi"

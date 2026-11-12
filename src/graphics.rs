@@ -78,6 +78,12 @@ impl Graphics {
     }
 
     /// Drop a pane's graphics state and queue deletion of its image data.
+    ///
+    /// A live pane can be dropped this way too, not only a closed one: Ghostty
+    /// discards the image data it decoded for a surface when that surface is
+    /// resized, while the pane's own storage keeps the image and its placement,
+    /// so forgetting what was forwarded is what makes the next frame re-send it
+    /// instead of believing the old images are still in place.
     pub fn remove_pane(&mut self, pane_id: u64) {
         if let Some(pane) = self.panes.remove(&pane_id) {
             self.pending_image_deletes

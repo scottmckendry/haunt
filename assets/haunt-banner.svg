@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 264" role="img" aria-labelledby="title desc" shape-rendering="crispEdges">
+  <title id="title">haunt</title>
+  <desc id="desc">Pixel art of a ghost in a terminal beside the word haunt and the slogan: muxed persistent processes that haunt your terminal.</desc>
+  <rect width="960" height="264" fill="#16181a"/>
+  <path d="M0 0h960v8H0zM0 256h960v8H0z" fill="#3c4048"/>
+  <path d="M36 44h4v4h-4z" fill="#5ef1ff"/>
+  <path d="M500 84h4v4h-4z" fill="#5ef1ff"/>
+  <path d="M556 224h4v4h-4z" fill="#5ef1ff"/>
+  <path d="M466 60h4v4h-4z" fill="#bd5eff"/>
+  <path d="M148 228h4v4h-4z" fill="#bd5eff"/>
+  <path d="M916 236h4v4h-4z" fill="#bd5eff"/>
+  <path d="M944 120h4v4h-4z" fill="#5c6370"/>
+  <path d="M652 72h4v4h-4z" fill="#5c6370"/>
+  <path d="M948 208h4v4h-4z" fill="#5c6370"/>
+  <path d="M196 20h4v4h-4z" fill="#5c6370"/>
+  <g transform="translate(58 64)" fill="#ffffff">
+    <path d="M0 0h8v56H0zM32 0h8v56h-8zM8 24h24v8H8z"/>
+    <path d="M8 0h24v8H8zM0 8h8v48H0zM32 8h8v48h-8zM8 24h24v8H8z" transform="translate(52)"/>
+    <path d="M0 0h8v48H0zM32 0h8v48h-8zM8 48h24v8H8z" transform="translate(104)"/>
+    <path d="M0 0h8v56H0zM32 0h8v56h-8zM8 8h8v8H8zM16 16h8v16h-8zM24 32h8v8h-8z" transform="translate(156)"/>
+    <path d="M0 0h40v8H0zM16 8h8v48h-8z" transform="translate(208)"/>
+  </g>
+  <path d="M58 128h248v8H58z" fill="#5ef1ff"/>
+  <defs>
+    <path id="glyph-a" d="M1 1h1v1h-1zM2 1h1v1h-1zM3 1h1v1h-1zM4 2h1v1h-1zM1 3h1v1h-1zM2 3h1v1h-1zM3 3h1v1h-1zM4 3h1v1h-1zM0 4h1v1h-1zM4 4h1v1h-1zM0 5h1v1h-1zM4 5h1v1h-1zM1 6h1v1h-1zM2 6h1v1h-1zM3 6h1v1h-1zM4 6h1v1h-1z"/>
+    <path id="glyph-c" d="M1 1h1v1h-1zM2 1h1v1h-1zM3 1h1v1h-1zM4 1h1v1h-1zM0 2h1v1h-1zM0 3h1v1h-1zM0 4h1v1h-1zM0 5h1v1h-1zM1 6h1v1h-1zM2 6h1v1h-1zM3 6h1v1h-1zM4 6h1v1h-1z"/>
+    <path id="glyph-d" d="M4 0h1v1h-1zM4 1h1v1h-1zM1 2h1v1h-1zM2 2h1v1h-1zM3 2h1v1h-1zM4 2h1v1h-1zM0 3h1v1h-1zM4 3h1v1h-1zM0 4h1v1h-1zM4 4h1v1h-1zM0 5h1v1h-1zM4 5h1v1h-1zM1 6h1v1h-1zM2 6h1v1h-1zM3 6h1v1h-1zM4 6h1v1h-1z"/>
+    <path id="glyph-e" d="M1 1h1v1h-1zM2 1h1v1h-1zM3 1h1v1h-1zM0 2h1v1h-1zM4 2h1v1h-1zM0 3h1v1h-1zM1 3h1v1h-1zM2 3h1v1h-1zM3 3h1v1h-1zM4 3h1v1h-1zM0 4h1v1h-1zM0 5h1v1h-1zM1 6h1v1h-1zM2 6h1v1h-1zM3 6h1v1h-1zM4 6h1v1h-1z"/>
+    <path id="glyph-h" d="M0 0h1v1h-1zM0 1h1v1h-1zM0 2h1v1h-1zM2 2h1v1h-1zM3 2h1v1h-1zM0 3h1v1h-1zM1 3h1v1h-1zM4 3h1v1h-1zM0 4h1v1h-1zM4 4h1v1h-1zM0 5h1v1h-1zM4 5h1v1h-1zM0 6h1v1h-1zM4 6h1v1h-1z"/>
+    <path id="glyph-i" d="M2 0h1v1h-1zM1 2h1v1h-1zM2 2h1v1h-1zM2 3h1v1h-1zM2 4h1v1h-1zM2 5h1v1h-1zM1 6h1v1h-1zM2 6h1v1h-1zM3 6h1v1h-1z"/>
+    <path id="glyph-l" d="M1 0h1v1h-1zM2 0h1v1h-1zM2 1h1v1h-1zM2 2h1v1h-1zM2 3h1v1h-1zM2 4h1v1h-1zM2 5h1v1h-1zM1 6h1v1h-1zM2 6h1v1h-1zM3 6h1v1h-1z"/>
+    <path id="glyph-m" d="M0 1h1v1h-1zM1 1h1v1h-1zM3 1h1v1h-1zM0 2h1v1h-1zM2 2h1v1h-1zM4 2h1v1h-1zM0 3h1v1h-1zM2 3h1v1h-1zM4 3h1v1h-1zM0 4h1v1h-1zM2 4h1v1h-1zM4 4h1v1h-1zM0 5h1v1h-1zM2 5h1v1h-1zM4 5h1v1h-1zM0 6h1v1h-1zM2 6h1v1h-1zM4 6h1v1h-1z"/>
+    <path id="glyph-n" d="M0 1h1v1h-1zM2 1h1v1h-1zM3 1h1v1h-1zM0 2h1v1h-1zM1 2h1v1h-1zM4 2h1v1h-1zM0 3h1v1h-1zM4 3h1v1h-1zM0 4h1v1h-1zM4 4h1v1h-1zM0 5h1v1h-1zM4 5h1v1h-1zM0 6h1v1h-1zM4 6h1v1h-1z"/>
+    <path id="glyph-o" d="M1 1h1v1h-1zM2 1h1v1h-1zM3 1h1v1h-1zM0 2h1v1h-1zM4 2h1v1h-1zM0 3h1v1h-1zM4 3h1v1h-1zM0 4h1v1h-1zM4 4h1v1h-1zM0 5h1v1h-1zM4 5h1v1h-1zM1 6h1v1h-1zM2 6h1v1h-1zM3 6h1v1h-1z"/>
+    <path id="glyph-p" d="M0 1h1v1h-1zM1 1h1v1h-1zM2 1h1v1h-1zM3 1h1v1h-1zM0 2h1v1h-1zM4 2h1v1h-1zM0 3h1v1h-1zM4 3h1v1h-1zM0 4h1v1h-1zM1 4h1v1h-1zM2 4h1v1h-1zM3 4h1v1h-1zM0 5h1v1h-1zM0 6h1v1h-1z"/>
+    <path id="glyph-r" d="M0 1h1v1h-1zM2 1h1v1h-1zM3 1h1v1h-1zM0 2h1v1h-1zM1 2h1v1h-1zM4 2h1v1h-1zM0 3h1v1h-1zM0 4h1v1h-1zM0 5h1v1h-1zM0 6h1v1h-1z"/>
+    <path id="glyph-s" d="M1 1h1v1h-1zM2 1h1v1h-1zM3 1h1v1h-1zM4 1h1v1h-1zM0 2h1v1h-1zM1 3h1v1h-1zM2 3h1v1h-1zM3 3h1v1h-1zM4 4h1v1h-1zM4 5h1v1h-1zM0 6h1v1h-1zM1 6h1v1h-1zM2 6h1v1h-1zM3 6h1v1h-1z"/>
+    <path id="glyph-t" d="M1 0h1v1h-1zM1 1h1v1h-1zM0 2h1v1h-1zM1 2h1v1h-1zM2 2h1v1h-1zM3 2h1v1h-1zM1 3h1v1h-1zM1 4h1v1h-1zM1 5h1v1h-1zM4 5h1v1h-1zM2 6h1v1h-1zM3 6h1v1h-1z"/>
+    <path id="glyph-u" d="M0 1h1v1h-1zM4 1h1v1h-1zM0 2h1v1h-1zM4 2h1v1h-1zM0 3h1v1h-1zM4 3h1v1h-1zM0 4h1v1h-1zM4 4h1v1h-1zM0 5h1v1h-1zM3 5h1v1h-1zM4 5h1v1h-1zM1 6h1v1h-1zM2 6h1v1h-1zM4 6h1v1h-1z"/>
+    <path id="glyph-x" d="M0 1h1v1h-1zM4 1h1v1h-1zM1 2h1v1h-1zM3 2h1v1h-1zM2 3h1v1h-1zM2 4h1v1h-1zM1 5h1v1h-1zM3 5h1v1h-1zM0 6h1v1h-1zM4 6h1v1h-1z"/>
+    <path id="glyph-y" d="M0 1h1v1h-1zM4 1h1v1h-1zM0 2h1v1h-1zM4 2h1v1h-1zM1 3h1v1h-1zM2 3h1v1h-1zM3 3h1v1h-1zM4 3h1v1h-1zM4 4h1v1h-1zM0 5h1v1h-1zM4 5h1v1h-1zM1 6h1v1h-1zM2 6h1v1h-1zM3 6h1v1h-1z"/>
+  </defs>
+  <g transform="translate(58 148) scale(3)" fill="#ffffff">
+    <use href="#glyph-m" x="0"/>
+    <use href="#glyph-u" x="8"/>
+    <use href="#glyph-x" x="16"/>
+    <use href="#glyph-e" x="24"/>
+    <use href="#glyph-d" x="32"/>
+    <use href="#glyph-p" x="43"/>
+    <use href="#glyph-e" x="51"/>
+    <use href="#glyph-r" x="59"/>
+    <use href="#glyph-s" x="67"/>
+    <use href="#glyph-i" x="75"/>
+    <use href="#glyph-s" x="83"/>
+    <use href="#glyph-t" x="91"/>
+    <use href="#glyph-e" x="99"/>
+    <use href="#glyph-n" x="107"/>
+    <use href="#glyph-t" x="115"/>
+    <use href="#glyph-p" x="126"/>
+    <use href="#glyph-r" x="134"/>
+    <use href="#glyph-o" x="142"/>
+    <use href="#glyph-c" x="150"/>
+    <use href="#glyph-e" x="158"/>
+    <use href="#glyph-s" x="166"/>
+    <use href="#glyph-s" x="174"/>
+    <use href="#glyph-e" x="182"/>
+    <use href="#glyph-s" x="190"/>
+  </g>
+  <g transform="translate(58 180) scale(3)" fill="#ffffff">
+    <use href="#glyph-t" x="0"/>
+    <use href="#glyph-h" x="8"/>
+    <use href="#glyph-a" x="16"/>
+    <use href="#glyph-t" x="24"/>
+    <use href="#glyph-h" x="35"/>
+    <use href="#glyph-a" x="43"/>
+    <use href="#glyph-u" x="51"/>
+    <use href="#glyph-n" x="59"/>
+    <use href="#glyph-t" x="67"/>
+    <use href="#glyph-y" x="78"/>
+    <use href="#glyph-o" x="86"/>
+    <use href="#glyph-u" x="94"/>
+    <use href="#glyph-r" x="102"/>
+    <use href="#glyph-t" x="113"/>
+    <use href="#glyph-e" x="121"/>
+    <use href="#glyph-r" x="129"/>
+    <use href="#glyph-m" x="137"/>
+    <use href="#glyph-i" x="145"/>
+    <use href="#glyph-n" x="153"/>
+    <use href="#glyph-a" x="161"/>
+    <use href="#glyph-l" x="169"/>
+  </g>
+  <path d="M680 40h256v184H680z" fill="#5c6370"/>
+  <path d="M688 48h240v168h-240z" fill="#191d23"/>
+  <path d="M700 68h8v8h8v8h-8v8h-8v-8h8v-8h-8z" fill="#5ef1ff"/>
+  <path d="M724 76h48v8h-48z" fill="#5c6370"/>
+  <path d="M700 108h56v8h-56z" fill="#3c4048"/>
+  <path d="M700 132h24v8h-24z" fill="#5ef1ff"/>
+  <path d="M700 152h16v8h-16z" fill="#5c6370"/>
+  <!-- Ghost, at 7px per cell -->
+  <g transform="translate(700 28) scale(7)">
+      <path fill="#000000" d="M17 1h6v1h-6zM16 2h2v1h-2zM22 2h2v1h-2zM15 3h2v1h-2zM23 3h3v1h-3zM14 4h2v1h-2zM25 4h2v1h-2zM13 5h2v1h-2zM26 5h2v1h-2zM13 6h1v1h-1zM20 6h2v1h-2zM24 6h1v1h-1zM27 6h1v1h-1zM13 7h1v1h-1zM20 7h2v1h-2zM24 7h2v1h-2zM27 7h1v1h-1zM12 8h2v1h-2zM19 8h3v1h-3zM24 8h2v1h-2zM27 8h1v1h-1zM12 9h1v1h-1zM19 9h3v1h-3zM24 9h2v1h-2zM27 9h1v1h-1zM12 10h1v1h-1zM20 10h1v1h-1zM25 10h1v1h-1zM27 10h1v1h-1zM12 11h1v1h-1zM27 11h1v1h-1zM11 12h2v1h-2zM27 12h1v1h-1zM10 13h2v1h-2zM27 13h1v1h-1zM10 14h1v1h-1zM27 14h1v1h-1zM9 15h2v1h-2zM27 15h1v1h-1zM7 16h3v1h-3zM27 16h1v1h-1zM6 17h2v1h-2zM27 17h1v1h-1zM2 18h5v1h-5zM27 18h1v1h-1zM1 19h2v1h-2zM27 19h1v1h-1zM1 20h2v1h-2zM24 20h1v1h-1zM26 20h2v1h-2zM2 21h2v1h-2zM24 21h3v1h-3zM3 22h5v1h-5zM20 22h1v1h-1zM24 22h2v1h-2zM7 23h3v1h-3zM20 23h1v1h-1zM22 23h3v1h-3zM9 24h2v1h-2zM12 24h4v1h-4zM19 24h4v1h-4zM10 25h3v1h-3zM15 25h6v1h-6z"/>
+      <path fill="#f9fafb" d="M18 2h4v1h-4zM17 3h6v1h-6zM16 4h9v1h-9zM15 5h11v1h-11zM14 6h6v1h-6zM22 6h2v1h-2zM25 6h2v1h-2zM14 7h6v1h-6zM22 7h2v1h-2zM26 7h1v1h-1zM14 8h5v1h-5zM22 8h2v1h-2zM26 8h1v1h-1zM13 9h6v1h-6zM22 9h2v1h-2zM26 9h1v1h-1zM13 10h7v1h-7zM21 10h4v1h-4zM26 10h1v1h-1zM13 11h13v1h-13zM13 12h13v1h-13zM12 13h13v1h-13zM11 14h14v1h-14zM11 15h13v1h-13zM10 16h14v1h-14zM8 17h4v1h-4zM13 17h3v1h-3zM17 17h4v1h-4zM22 17h2v1h-2zM7 18h4v1h-4zM13 18h3v1h-3zM17 18h4v1h-4zM22 18h1v1h-1zM3 19h7v1h-7zM13 19h2v1h-2zM17 19h3v1h-3zM22 19h1v1h-1zM3 20h5v1h-5zM12 20h3v1h-3zM17 20h3v1h-3zM22 20h1v1h-1zM4 21h3v1h-3zM11 21h3v1h-3zM16 21h4v1h-4zM11 22h2v1h-2zM16 22h4v1h-4zM10 23h3v1h-3zM16 23h2v1h-2zM11 24h1v1h-1z"/>
+      <path fill="#b3c3e4" d="M26 11h1v1h-1zM26 12h1v1h-1zM25 13h2v1h-2zM25 14h2v1h-2zM24 15h3v1h-3zM24 16h3v1h-3zM12 17h1v1h-1zM16 17h1v1h-1zM21 17h1v1h-1zM24 17h3v1h-3zM11 18h2v1h-2zM16 18h1v1h-1zM21 18h1v1h-1zM23 18h4v1h-4zM10 19h3v1h-3zM15 19h2v1h-2zM20 19h2v1h-2zM23 19h4v1h-4zM8 20h4v1h-4zM15 20h2v1h-2zM20 20h2v1h-2zM23 20h1v1h-1zM25 20h1v1h-1zM7 21h4v1h-4zM14 21h2v1h-2zM20 21h4v1h-4zM8 22h3v1h-3zM13 22h3v1h-3zM21 22h3v1h-3zM13 23h3v1h-3zM18 23h2v1h-2zM21 23h1v1h-1zM16 24h3v1h-3z"/>
+  </g>
+</svg>

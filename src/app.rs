@@ -17,7 +17,7 @@ use crossterm::{
 use libghostty_vt::{key, terminal::Mode};
 
 use crate::{
-    base64,
+    banner, base64,
     config::{AppSize, Config},
     graphics::Graphics,
     input,
@@ -101,6 +101,10 @@ pub struct App {
     last_cwd: Option<PathBuf>,
     last_progress: Option<Progress>,
     hostname: String,
+    /// Whether the launch banner still has to be written to the main pane.
+    banner_pending: bool,
+    /// Whether the main pane holds the banner's ghost.
+    ghost: bool,
 }
 
 impl App {
@@ -110,6 +114,9 @@ impl App {
             Pane::spawn(0, &cfg.shell, None, dims_of(size, full_area(size)), theme)?;
         spawn_reader(0, reader, tx.clone());
         let aux = (0..cfg.apps.len()).map(|_| None).collect();
+        // Only the main process writes a banner: app panes never get a ghost, and
+        // reloading the config does not write another one.
+        let banner_pending = cfg.banner;
 
         Ok(Self {
             cfg,
@@ -139,7 +146,9 @@ impl App {
             last_title: None,
             last_cwd: None,
             last_progress: None,
-            hostname: hostname(),
+            hostname: crate::machine::hostname(),
+            banner_pending,
+            ghost: false,
         })
     }
 
@@ -170,6 +179,9 @@ impl App {
                         self.frame_dirty = true;
                     }
                 }
+                if id == self.main.id {
+                    self.write_banner();
+                }
                 self.pending_writes.extend_from_slice(&effects);
             }
             Msg::PaneEof(id) => self.on_eof(id)?,
@@ -195,7 +207,21 @@ impl App {
 
     pub fn resize(&mut self, size: Size) -> Result<()> {
         self.size = size;
-        self.relayout()
+        self.relayout()?;
+        self.refresh_ghost();
+        Ok(())
+    }
+
+    /// Put the banner's ghost back after a resize.
+    ///
+    /// See [`Graphics::remove_pane`]: a resized surface has no image data left,
+    /// so the next frame has to re-send the ghost and place it again on the row
+    /// where the banner is, including when the banner has already scrolled away,
+    /// in which case the ghost goes with it.
+    fn refresh_ghost(&mut self) {
+        if self.ghost {
+            self.graphics.remove_pane(self.main.id);
+        }
     }
 
     pub fn render(&mut self, out: &mut impl Write) -> Result<()> {
@@ -207,7 +233,6 @@ impl App {
         if !self.needs_frame() {
             return Ok(());
         }
-
         let visible_size = self.visible.map(|idx| self.cfg.apps[idx].size);
         let (main_area, aux_area) = layout(self.size, visible_size);
         let full_aux = visible_size == Some(AppSize::Full);
@@ -306,6 +331,29 @@ impl App {
             Vec::with_capacity(32 * 1024)
         };
         Ok(())
+    }
+
+    /// Write the launch banner into the main pane, once, as its first output.
+    ///
+    /// The pane has just shown its prompt; the banner scrolls the screen down and
+    /// takes the rows above it, so it reads as output of the shell and scrolls
+    /// away with the rest of the history.
+    fn write_banner(&mut self) {
+        if !self.banner_pending {
+            return;
+        }
+        self.banner_pending = false;
+        let cursor = self.main.cursor();
+        let banner = banner::draw(
+            &self.cfg,
+            self.size,
+            cursor,
+            crate::theme::under_ghostty(),
+            self.theme,
+        );
+        self.ghost = banner.ghost;
+        // Failing here only means no banner; the shell itself is unaffected.
+        let _ = self.main.feed(&banner.bytes);
     }
 
     pub fn shutdown(&mut self) {
@@ -997,24 +1045,6 @@ fn osc7_sequence(hostname: &str, cwd: &Path) -> Vec<u8> {
     out.extend_from_slice(path.as_bytes());
     out.push(0x07);
     out
-}
-
-fn hostname() -> String {
-    let mut buf = [0u8; 256];
-    // SAFETY: `buf` is valid writable storage for its full length.
-    if unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } == 0 {
-        let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-        if let Ok(name) = std::str::from_utf8(&buf[..end]) {
-            let name = name.trim();
-            if !name.is_empty() {
-                return name.to_owned();
-            }
-        }
-    }
-    std::env::var("HOSTNAME")
-        .ok()
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "localhost".into())
 }
 
 fn contains(area: Area, x: u16, y: u16) -> bool {

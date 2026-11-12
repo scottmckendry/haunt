@@ -39,9 +39,7 @@ impl Theme {
     /// Returns `None` when not running under Ghostty or when the CLI is
     /// unavailable, in which case libghostty-vt's built-in defaults apply.
     pub fn load() -> Option<Self> {
-        let under_ghostty = env::var("TERM_PROGRAM").ok().as_deref() == Some("ghostty")
-            || env::var_os("GHOSTTY_RESOURCES_DIR").is_some();
-        if !under_ghostty {
+        if !under_ghostty() {
             return None;
         }
 
@@ -116,6 +114,13 @@ impl Theme {
             ColorScheme::Dark
         })
     }
+}
+
+/// Whether the outer terminal is Ghostty, and so can be assumed to draw Kitty
+/// images and answer the theme CLI.
+pub fn under_ghostty() -> bool {
+    env::var("TERM_PROGRAM").ok().as_deref() == Some("ghostty")
+        || env::var_os("GHOSTTY_RESOURCES_DIR").is_some()
 }
 
 #[cfg(test)]
