@@ -84,7 +84,7 @@ pub fn kernel() -> Option<String> {
         let bytes: Vec<u8> = value
             .iter()
             .take_while(|&&byte| byte != 0)
-            .map(|&byte| byte as u8)
+            .map(|&byte| byte.to_ne_bytes()[0])
             .collect();
         String::from_utf8(bytes).ok()
     };
