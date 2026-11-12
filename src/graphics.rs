@@ -399,10 +399,14 @@ fn placement_geometry(
     };
 
     let mut cmd = Vec::new();
+    // XY are the destination offsets within the first cell; xywh are the
+    // source rectangle. Kitty keeps them strictly apart, so swapping them
+    // turns a crop into a squashed image (and, through the storage's own
+    // scroll clipping, into a placement that drifts away).
     cmd.extend_from_slice(
         format!(
             "\x1b[{};{}H\x1b_Ga=p,i={outer_id},p={placement_id},c={dest_cols},r={dest_rows},\
-             x={x_offset},y={y_offset},X={source_x},Y={source_y},\
+             X={x_offset},Y={y_offset},x={source_x},y={source_y},\
              w={source_width},h={source_height},z={z},C=1,q=2\x1b\\",
             area.y as i32 + top + 1,
             area.x as i32 + left + 1,
@@ -455,7 +459,7 @@ fn virtual_placement(
 
     let cmd = format!(
         "\x1b_Ga=p,U=1,i={outer_id},p={placement_id},c={cols},r={rows},\
-         x={x_offset},y={y_offset},X={source_x},Y={source_y},\
+         X={x_offset},Y={y_offset},x={source_x},y={source_y},\
          w={source_width},h={source_height},z={z},C=1,q=2\x1b\\"
     )
     .into_bytes();
@@ -744,6 +748,60 @@ mod tests {
         let text = String::from_utf8_lossy(&out);
         assert!(text.contains("a=t,f=32,s=1,v=1,i=2"), "{text:?}");
         assert!(text.contains("a=p,i=2"), "{text:?}");
+    }
+
+    /// The placement parameters a terminal holds for `image_id`, in the
+    /// order the Kitty protocol names them: cell offsets (X, Y), source
+    /// rectangle (x, y, w, h), then the cell box (c, r).
+    type PlacementParams = (u32, u32, u32, u32, u32, u32, u32, u32);
+
+    fn placement_params(term: &Terminal<'_, '_>, image_id: u32) -> PlacementParams {
+        let storage = term.kitty_graphics().unwrap().unwrap();
+        let mut it = PlacementIterator::new().unwrap();
+        let mut ps = it.update(&storage).unwrap();
+        while ps.next().is_some() {
+            if ps.image_id().unwrap() != image_id {
+                continue;
+            }
+            return (
+                ps.x_offset().unwrap(),
+                ps.y_offset().unwrap(),
+                ps.source_x().unwrap(),
+                ps.source_y().unwrap(),
+                ps.source_width().unwrap(),
+                ps.source_height().unwrap(),
+                ps.columns().unwrap(),
+                ps.rows().unwrap(),
+            );
+        }
+        panic!("no placement for image {image_id}");
+    }
+
+    #[test]
+    fn forwarding_keeps_cell_offsets_and_source_rect_apart() {
+        let mut term = terminal();
+        // A source crop (x, y, w, h) together with cell pixel offsets (X, Y):
+        // the shape a scrolling TUI sends when it crops an image at the top
+        // of its viewport. Swapping the two turns the crop into a squashed,
+        // drifting image in the outer terminal.
+        term.vt_write(b"\x1b_Ga=t,f=24,s=4,v=4,i=7;".as_slice());
+        let mut seq = Vec::new();
+        base64::encode_into(&[255; 48], &mut seq);
+        term.vt_write(&seq);
+        term.vt_write(b"\x1b\\");
+        term.vt_write(b"\x1b_Ga=p,i=7,c=4,r=2,x=1,y=2,w=2,h=2,X=2,Y=3\x1b\\");
+
+        let mut graphics = Graphics::new().unwrap();
+        let mut out = Vec::new();
+        graphics
+            .draw_pane(1, &term, &mut out, area(0, 0, 20, 10))
+            .unwrap();
+
+        let mut outer = terminal();
+        outer.vt_write(&out);
+        let forwarded = placement_params(&outer, 1);
+        assert_eq!(forwarded, placement_params(&term, 7));
+        assert_eq!(forwarded, (2, 3, 1, 2, 2, 2, 4, 2));
     }
 
     #[test]
