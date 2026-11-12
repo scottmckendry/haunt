@@ -81,6 +81,10 @@ pub struct App {
     visible: Option<usize>,
     focus: Focus,
     size: Size,
+    /// Fraction of the half-split width given to the main pane.
+    split_ratio: f64,
+    /// Whether the pointer is dragging the separator.
+    resizing_split: bool,
     tx: SyncSender<Msg>,
     next_id: u64,
     encoder: key::Encoder<'static>,
@@ -127,6 +131,8 @@ impl App {
             visible: None,
             focus: Focus::Main,
             size,
+            split_ratio: 0.5,
+            resizing_split: false,
             tx,
             next_id: 1,
             encoder: key::Encoder::new()?,
@@ -234,7 +240,7 @@ impl App {
             return Ok(());
         }
         let visible_size = self.visible.map(|idx| self.cfg.apps[idx].size);
-        let (main_area, aux_area) = layout(self.size, visible_size);
+        let (main_area, aux_area) = layout(self.size, visible_size, self.split_ratio);
         let full_aux = visible_size == Some(AppSize::Full);
 
         // Reuse the frame buffer: a full repaint can be tens of kilobytes, and
@@ -533,7 +539,10 @@ impl App {
     fn show(&mut self, idx: usize) -> Result<()> {
         let old_id = self.focused_id();
         if self.aux[idx].is_none() {
-            let dims = dims_of(self.size, hidden_area(self.size, self.cfg.apps[idx].size));
+            let dims = dims_of(
+                self.size,
+                hidden_area(self.size, self.cfg.apps[idx].size, self.split_ratio),
+            );
             let cmd = self.cfg.apps[idx].cmd.clone();
             let name = self.cfg.apps[idx].name.clone();
             // Aux apps start where the main pane's foreground process is, not
@@ -611,6 +620,22 @@ impl App {
     }
 
     fn on_mouse(&mut self, ev: MouseEvent) -> Result<()> {
+        // The separator owns the pointer for the whole drag, even past the
+        // outer edges of the terminal.
+        if self.resizing_split {
+            match ev.kind {
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    self.resize_split_to(ev.column)?;
+                    return Ok(());
+                }
+                MouseEventKind::Up(MouseButton::Left) => {
+                    self.resizing_split = false;
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+
         // A drag or release belongs to the pane where the selection started,
         // even when the pointer has left that pane.
         if matches!(
@@ -666,6 +691,14 @@ impl App {
         // Any new press starts a fresh gesture.
         if matches!(ev.kind, MouseEventKind::Down(_)) {
             self.mouse_capture = None;
+        }
+
+        if matches!(ev.kind, MouseEventKind::Down(MouseButton::Left))
+            && self.separator_column() == Some(ev.column)
+        {
+            self.clear_selections()?;
+            self.resizing_split = true;
+            return Ok(());
         }
 
         let Some((area, id)) = self.pane_at(ev.column, ev.row) else {
@@ -809,7 +842,7 @@ impl App {
 
     fn pane_area(&self, id: u64) -> Option<Area> {
         let visible_size = self.visible.map(|idx| self.cfg.apps[idx].size);
-        let (main_area, aux_area) = layout(self.size, visible_size);
+        let (main_area, aux_area) = layout(self.size, visible_size, self.split_ratio);
         if self.main.id == id {
             return Some(main_area);
         }
@@ -824,7 +857,7 @@ impl App {
     fn pane_input_area(&self, id: u64) -> Option<Area> {
         if self.main.id == id {
             let visible_size = self.visible.map(|idx| self.cfg.apps[idx].size);
-            return Some(layout(self.size, visible_size).0);
+            return Some(layout(self.size, visible_size, self.split_ratio).0);
         }
 
         let idx = self
@@ -836,12 +869,41 @@ impl App {
         }
         // Keep delivering a captured drag or release even if the pane was
         // hidden mid-gesture, so the app can clear its button state.
-        Some(hidden_area(self.size, self.cfg.apps[idx].size))
+        Some(hidden_area(
+            self.size,
+            self.cfg.apps[idx].size,
+            self.split_ratio,
+        ))
+    }
+
+    /// The column of the separator between a visible half-size app and the
+    /// main pane, if the split is wide enough to have one.
+    fn separator_column(&self) -> Option<u16> {
+        let visible_size = self.visible.map(|idx| self.cfg.apps[idx].size);
+        if visible_size != Some(AppSize::Half) || self.size.cols < 3 {
+            return None;
+        }
+        Some(layout(self.size, visible_size, self.split_ratio).0.w)
+    }
+
+    fn resize_split_to(&mut self, column: u16) -> Result<()> {
+        let available = split_available(self.size);
+        if available < 2 {
+            return Ok(());
+        }
+        // Keep at least one column on each side of the separator.
+        let main_w = column.clamp(1, available - 1);
+        let ratio = f64::from(main_w) / f64::from(available);
+        if ratio == self.split_ratio {
+            return Ok(());
+        }
+        self.split_ratio = ratio;
+        self.relayout()
     }
 
     fn pane_at(&self, x: u16, y: u16) -> Option<(Area, u64)> {
         let visible_size = self.visible.map(|idx| self.cfg.apps[idx].size);
-        let (main_area, aux_area) = layout(self.size, visible_size);
+        let (main_area, aux_area) = layout(self.size, visible_size, self.split_ratio);
 
         if let (Some(idx), Some(area)) = (self.visible, aux_area)
             && contains(area, x, y)
@@ -870,7 +932,7 @@ impl App {
 
     fn relayout(&mut self) -> Result<()> {
         let visible_size = self.visible.map(|idx| self.cfg.apps[idx].size);
-        let (main_area, aux_area) = layout(self.size, visible_size);
+        let (main_area, aux_area) = layout(self.size, visible_size, self.split_ratio);
 
         self.main.resize(dims_of(self.size, main_area))?;
         self.main.force_repaint();
@@ -879,7 +941,7 @@ impl App {
             let area = if Some(idx) == self.visible {
                 aux_area.expect("visible aux has an area")
             } else {
-                hidden_area(self.size, self.cfg.apps[idx].size)
+                hidden_area(self.size, self.cfg.apps[idx].size, self.split_ratio)
             };
             if let Some(pane) = self.aux[idx].as_mut() {
                 pane.resize(dims_of(self.size, area))?;
@@ -1070,12 +1132,33 @@ fn full_area(size: Size) -> Area {
     }
 }
 
-fn layout(size: Size, visible: Option<AppSize>) -> (Area, Option<Area>) {
+fn split_gap(cols: u16) -> u16 {
+    u16::from(cols >= 3)
+}
+
+fn split_available(size: Size) -> u16 {
+    size.cols.saturating_sub(split_gap(size.cols))
+}
+
+/// The main pane's width at `ratio`, clamped so both panes stay at least one
+/// column wide when the split has room for it.
+fn split_main_width(size: Size, ratio: f64) -> u16 {
+    let available = split_available(size);
+    if available < 2 {
+        return available.saturating_sub(1);
+    }
+    // The epsilon keeps an exact ratio (for example 39/79 from a drag) from
+    // flooring to one column less because of floating-point error.
+    let width = (f64::from(available) * ratio.clamp(0.0, 1.0) + 1e-6).floor() as u16;
+    width.clamp(1, available - 1)
+}
+
+fn layout(size: Size, visible: Option<AppSize>, ratio: f64) -> (Area, Option<Area>) {
     let full = full_area(size);
     match visible {
         Some(AppSize::Half) => {
-            let gap = u16::from(size.cols >= 3);
-            let main_w = (size.cols - gap) / 2;
+            let gap = split_gap(size.cols);
+            let main_w = split_main_width(size, ratio);
             let aux_w = size.cols - gap - main_w;
             (
                 Area {
@@ -1097,9 +1180,11 @@ fn layout(size: Size, visible: Option<AppSize>) -> (Area, Option<Area>) {
     }
 }
 
-fn hidden_area(size: Size, app_size: AppSize) -> Area {
+fn hidden_area(size: Size, app_size: AppSize, ratio: f64) -> Area {
     match app_size {
-        AppSize::Half => layout(size, Some(AppSize::Half)).1.expect("half area"),
+        AppSize::Half => layout(size, Some(AppSize::Half), ratio)
+            .1
+            .expect("half area"),
         AppSize::Full => full_area(size),
     }
 }
@@ -1225,14 +1310,14 @@ mod tests {
 
     #[test]
     fn hidden_main_uses_the_full_tab() {
-        let (main, aux) = layout(size(80, 24), None);
+        let (main, aux) = layout(size(80, 24), None, 0.5);
         assert_eq!(main, full_area(size(80, 24)));
         assert_eq!(aux, None);
     }
 
     #[test]
     fn half_aux_splits_the_tab_vertically() {
-        let (main, aux) = layout(size(80, 24), Some(AppSize::Half));
+        let (main, aux) = layout(size(80, 24), Some(AppSize::Half), 0.5);
         assert_eq!(
             main,
             Area {
@@ -1255,7 +1340,7 @@ mod tests {
 
     #[test]
     fn full_aux_covers_the_main_pane() {
-        let (main, aux) = layout(size(80, 24), Some(AppSize::Full));
+        let (main, aux) = layout(size(80, 24), Some(AppSize::Full), 0.5);
         assert_eq!(main, full_area(size(80, 24)));
         assert_eq!(aux, Some(full_area(size(80, 24))));
     }
@@ -1263,7 +1348,7 @@ mod tests {
     #[test]
     fn hidden_panes_keep_their_visible_size() {
         assert_eq!(
-            hidden_area(size(80, 24), AppSize::Half),
+            hidden_area(size(80, 24), AppSize::Half, 0.5),
             Area {
                 x: 40,
                 y: 0,
@@ -1272,7 +1357,7 @@ mod tests {
             }
         );
         assert_eq!(
-            hidden_area(size(80, 24), AppSize::Full),
+            hidden_area(size(80, 24), AppSize::Full, 0.5),
             full_area(size(80, 24))
         );
     }
@@ -1338,12 +1423,85 @@ mod tests {
 
     #[test]
     fn split_accounts_for_separator_and_narrow_terminals() {
-        let (main, aux) = layout(size(81, 24), Some(AppSize::Half));
+        let (main, aux) = layout(size(81, 24), Some(AppSize::Half), 0.5);
         assert_eq!(main.w, 40);
         assert_eq!(aux.unwrap().w, 40);
-        let (main, aux) = layout(size(2, 24), Some(AppSize::Half));
+        let (main, aux) = layout(size(2, 24), Some(AppSize::Half), 0.5);
         assert_eq!(main.w, 1);
         assert_eq!(aux.unwrap().x, 1);
+    }
+
+    #[test]
+    fn split_ratio_clamps_to_one_column_per_pane() {
+        let (main, aux) = layout(size(80, 24), Some(AppSize::Half), 0.0);
+        assert_eq!(main.w, 1);
+        assert_eq!(aux.unwrap().w, 78);
+        let (main, aux) = layout(size(80, 24), Some(AppSize::Half), 1.0);
+        assert_eq!(main.w, 78);
+        assert_eq!(aux.unwrap().w, 1);
+
+        // An exact dragged ratio must not floor to a column less.
+        let ratio = 39.0 / 79.0;
+        let (main, aux) = layout(size(80, 24), Some(AppSize::Half), ratio);
+        assert_eq!(main.w, 39);
+        assert_eq!(aux.unwrap().x, 40);
+    }
+
+    #[test]
+    fn dragging_the_separator_resizes_the_split() {
+        let cfg = Config::parse(
+            "shell=['/bin/sh']\n[[app]]\nname='a'\nbind='ctrl+a'\ncmd=['/bin/sh']\nsize='half'",
+        )
+        .unwrap();
+        let (tx, _rx) = channel();
+        let mut app = App::new(cfg, size(80, 10), None, tx).unwrap();
+        app.show(0).unwrap();
+
+        let mouse = |kind, column, row| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        let separator = app.separator_column().unwrap();
+
+        app.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), separator, 0))
+            .unwrap();
+        assert!(app.resizing_split);
+
+        app.on_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 20, 0))
+            .unwrap();
+        let (main, aux) = layout(app.size, Some(AppSize::Half), app.split_ratio);
+        assert_eq!(main.w, 20);
+        assert_eq!(aux.unwrap().x, 21);
+        assert_eq!(app.main.term().cols().unwrap(), 20);
+
+        // The drag stays with the separator even past either edge.
+        app.on_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 0, 0))
+            .unwrap();
+        assert_eq!(
+            layout(app.size, Some(AppSize::Half), app.split_ratio).0.w,
+            1
+        );
+        app.on_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 255, 0))
+            .unwrap();
+        assert_eq!(
+            layout(app.size, Some(AppSize::Half), app.split_ratio).0.w,
+            78
+        );
+
+        app.on_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 255, 0))
+            .unwrap();
+        assert!(!app.resizing_split);
+
+        // The ratio survives a terminal resize.
+        app.resize(size(100, 10)).unwrap();
+        assert_eq!(
+            layout(app.size, Some(AppSize::Half), app.split_ratio).0.w,
+            97
+        );
+
+        app.shutdown();
     }
 
     #[test]

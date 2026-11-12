@@ -27,7 +27,7 @@ Run `haunt` inside Ghostty. Your shell opens as the main pane. On first run, hau
 
 Press a binding to start and show its app; press it again to hide it. Only one app is visible at a time, but hidden apps continue running. Switching to another app hides the previous one. If an app exits, its next invocation starts a fresh process. New apps start in the main pane's current working directory when it can be determined.
 
-A half-size app appears to the right of the main pane; a full-size app covers it. Click a pane to focus it.
+A half-size app appears to the right of the main pane; a full-size app covers it. Drag the separator between them to resize the split. Click a pane to focus it.
 
 Press `ctrl+shift+h` to show your configured apps and bindings. Press `ctrl+shift+r` to reload the configuration. Help and other notifications stack and disappear after five seconds; press Esc to dismiss them early.
 
