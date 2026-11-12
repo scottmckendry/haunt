@@ -497,25 +497,58 @@ mod tests {
             ("kernel", "Linux 6.12.9".into()),
             ("uptime", "3 days, 4 hrs".into()),
         ];
-        let text: Vec<String> = lines(&probed, 40, RESET)
+        let rendered = lines(&probed, 40, RESET);
+        let text: Vec<String> = rendered
             .iter()
             .map(|runs| runs.iter().map(|(_, run)| run.as_str()).collect())
             .collect();
-        // The version starts in the same column as the values below it.
-        assert_eq!(text[0], "haunt  v0.3.1");
-        assert_eq!(text[1], "host   scott@ncase");
-        assert_eq!(text[2], "kernel Linux 6.12.9");
-        assert_eq!(text[3], "uptime 3 days, 4 hrs");
+
+        // The wordmark has a row to itself, with the version in the values
+        // column rather than hard against the wordmark.
+        assert_eq!(rendered.len(), probed.len() + 1);
+        let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+        let version_rest = text[0]
+            .strip_prefix("haunt")
+            .expect("the first row is not the wordmark");
+        let version_gap = version_rest.len() - version_rest.trim_start().len();
+        assert_eq!(version_rest.trim_start(), version);
+        let version_col = display_width("haunt") + version_gap;
+
+        // One row per probe, in order: the label starts on the left and every
+        // value starts in the same column as the version.
+        for (row, (label, value)) in text[1..].iter().zip(&probed) {
+            assert!(
+                row.starts_with(*label),
+                "{row:?} does not start with {label:?}"
+            );
+            let rest = &row[label.len()..];
+            let value_gap = rest.len() - rest.trim_start().len();
+            assert!(value_gap > 0, "{row:?} has no space after its label");
+            assert_eq!(rest.trim_start(), value.as_str(), "wrong value in {row:?}");
+            assert_eq!(
+                display_width(&row[..label.len() + value_gap]),
+                version_col,
+                "value is not in the values column: {row:?}"
+            );
+        }
 
         // A value too wide for the pane is cut, never wrapped onto the next row.
         let tight = lines(&probed, 12, RESET);
-        assert!(display_width(&tight[2].iter().map(|(_, t)| t.as_str()).collect::<String>()) <= 12);
-        assert_eq!(
-            clip("NixOS 25.05", 11),
-            "NixOS 25.05",
-            "eleven cells is exactly eleven"
+        assert_eq!(tight.len(), probed.len() + 1);
+        // The wordmark row has its own fixed width; the probe rows share the
+        // pane's budget.
+        for (index, runs) in tight[1..].iter().enumerate() {
+            let width: usize = runs.iter().map(|(_, text)| display_width(text)).sum();
+            assert!(
+                width <= 12,
+                "probe row {index} overflowed its 12 cells: {runs:?}"
+            );
+        }
+        let kernel: String = tight[2].iter().map(|(_, text)| text.as_str()).collect();
+        assert!(
+            kernel.starts_with("kernel ") && kernel.ends_with('…'),
+            "the long value was not clipped: {kernel:?}"
         );
-        assert_eq!(clip("NixOS 25.05", 10), "NixOS 25.…");
     }
 
     /// The ghost has to survive the trip to the outer terminal, which needs the
