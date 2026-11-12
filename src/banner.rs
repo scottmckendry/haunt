@@ -118,9 +118,15 @@ fn lines<'a>(
         .unwrap_or(6)
         .max(6);
 
+    // The version sits in the values column, not hard against the wordmark.
+    let wordmark = "haunt";
+    let gap = (label_w + 1).saturating_sub(display_width(wordmark));
     let mut out = vec![vec![
-        (WORDMARK, "haunt".into()),
-        (secondary, format!(" v{}", env!("CARGO_PKG_VERSION"))),
+        (WORDMARK, wordmark.into()),
+        (
+            secondary,
+            format!("{}v{}", " ".repeat(gap), env!("CARGO_PKG_VERSION")),
+        ),
     ]];
     for (name, value) in probed {
         let label = clip(&format!("{name:<label_w$} "), budget);
@@ -165,8 +171,6 @@ fn probe_lines(cfg: &Config) -> Vec<(&'static str, String)> {
         ),
         ("system", machine::system()),
         ("kernel", machine::kernel()),
-        ("cpu", machine::cpu()),
-        ("memory", machine::memory()),
         ("uptime", machine::uptime().map(machine::format_uptime)),
         ("shell", shell.map(shell_line)),
         ("terminal", machine::terminal()),
@@ -358,9 +362,7 @@ mod tests {
             .collect();
         // The terminal line is absent when the terminal does not name itself,
         // as on a CI runner with no `TERM_PROGRAM`.
-        let mut expected = vec![
-            "host", "system", "kernel", "cpu", "memory", "uptime", "shell",
-        ];
+        let mut expected = vec!["host", "system", "kernel", "uptime", "shell"];
         if machine::terminal().is_some() {
             expected.push("terminal");
         }
@@ -492,16 +494,17 @@ mod tests {
     fn the_banner_is_a_wordmark_and_a_row_per_line() {
         let probed: Vec<(&'static str, String)> = vec![
             ("host", "scott@ncase".into()),
-            ("memory", "32 GB".into()),
+            ("kernel", "Linux 6.12.9".into()),
             ("uptime", "3 days, 4 hrs".into()),
         ];
         let text: Vec<String> = lines(&probed, 40, RESET)
             .iter()
             .map(|runs| runs.iter().map(|(_, run)| run.as_str()).collect())
             .collect();
-        assert_eq!(text[0], "haunt v0.3.1");
+        // The version starts in the same column as the values below it.
+        assert_eq!(text[0], "haunt  v0.3.1");
         assert_eq!(text[1], "host   scott@ncase");
-        assert_eq!(text[2], "memory 32 GB");
+        assert_eq!(text[2], "kernel Linux 6.12.9");
         assert_eq!(text[3], "uptime 3 days, 4 hrs");
 
         // A value too wide for the pane is cut, never wrapped onto the next row.

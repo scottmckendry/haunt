@@ -120,98 +120,6 @@ pub fn user() -> String {
         .unwrap_or_else(|| "someone".into())
 }
 
-/// The processor: its brand, its speed when the kernel will say, and how many
-/// of it are awake.
-///
-/// Linux keeps those in three different places, and a machine that reports
-/// neither brand nor speed answers nothing rather than a bare "8 cores".
-pub fn cpu() -> Option<String> {
-    #[cfg(target_os = "linux")]
-    {
-        let text = fs::read_to_string("/proc/cpuinfo").ok()?;
-        let field = |key: &str| {
-            text.lines()
-                .filter_map(|line| line.split_once(':'))
-                .find(|(name, _)| name.trim() == key)
-                .map(|(_, value)| value.trim().to_owned())
-        };
-        let model = field("model name")?;
-        let cores = text
-            .lines()
-            .filter(|line| line.starts_with("processor"))
-            .count();
-        let speed = field("mhz").or_else(|| field("cpu mhz"));
-        let detail = match (speed, cores) {
-            (Some(speed), 0) => format!("{speed} GHz"),
-            (Some(speed), cores) => format!("{speed} GHz, {cores} cores"),
-            // A brand alone is not worth a row.
-            (None, 0) => return None,
-            (None, cores) => format!("{cores} cores"),
-        };
-        Some(format!("{model}, {detail}"))
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let brand = sysctl_string(b"machdep.cpu.brand_string\0")?;
-        let cores = sysctl_string(b"hw.ncpu\0").unwrap_or_default();
-        let speed = sysctl_string(b"hw.cpufrequency\0")
-            .and_then(|hz| hz.parse::<u64>().ok())
-            .map(|hz| format!("{:.1} GHz", hz as f64 / 1e9))
-            .filter(|speed| !speed.starts_with("0"));
-        let detail = match (speed, cores.is_empty()) {
-            (Some(speed), false) => format!("{speed}, {cores} cores"),
-            (Some(speed), true) => speed,
-            (None, false) => format!("{cores} cores"),
-            (None, true) => return None,
-        };
-        Some(format!("{brand}, {detail}"))
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        None
-    }
-}
-
-/// The installed memory, in gigabytes: "32 GB".
-///
-/// The kernel gives an exact count, but machines are sold by the gigabyte, so
-/// the count is rounded to the nearest one: 4097 MiB is the same machine as
-/// 4096 MiB.
-pub fn memory() -> Option<String> {
-    #[cfg(target_os = "linux")]
-    let kib = || {
-        let text = fs::read_to_string("/proc/meminfo").ok()?;
-        let value = text
-            .lines()
-            .find_map(|line| line.split_once(':'))
-            .filter(|(name, _)| name.trim() == "MemTotal")?;
-        value.1.split_whitespace().next()?.parse::<u64>().ok()
-    };
-    #[cfg(target_os = "macos")]
-    let kib = || {
-        let bytes = sysctl_raw(b"hw.memsize\0")?.get(..8)?.try_into().ok()?;
-        Some(u64::from_ne_bytes(bytes) / 1024)
-    };
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    let kib = || None;
-
-    Some(format_memory(kib()?))
-}
-
-/// KiB, written at the largest unit it reaches: a size under a gigabyte keeps
-/// its megabytes instead of rounding to zero.
-fn format_memory(kib: u64) -> String {
-    let mib = kib / 1024;
-    if mib < 1024 {
-        return if mib == 0 {
-            format!("{kib} KB")
-        } else {
-            format!("{mib} MB")
-        };
-    }
-    format!("{} GB", (mib + 512) / 1024)
-}
-
 /// The terminal program and its version: "Ghostty 1.4.0".
 ///
 /// A terminal that names itself exports both variables, so this costs nothing.
@@ -456,20 +364,6 @@ mod tests {
             "3 days, 4 hrs"
         );
         assert_eq!(format_uptime(86_400 + 60), "1 day");
-    }
-
-    #[test]
-    fn memory_is_written_at_the_unit_it_reaches() {
-        assert_eq!(format_memory(512), "512 KB");
-        assert_eq!(format_memory(2048), "2 MB");
-        assert_eq!(format_memory(1023 * 1024), "1023 MB");
-        // A real size is exact, and the rounding of a little slack never invents
-        // a capacity the machine does not have.
-        assert_eq!(format_memory(1024 * 1024), "1 GB");
-        assert_eq!(format_memory(4 * 1024 * 1024), "4 GB");
-        assert_eq!(format_memory(4 * 1024 * 1024 + 1), "4 GB");
-        assert_eq!(format_memory(3800 * 1024), "4 GB");
-        assert_eq!(format_memory(12 * 1024 * 1024), "12 GB");
     }
 
     #[test]
