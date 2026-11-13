@@ -1242,8 +1242,12 @@ fn paint_separator(out: &mut Vec<u8>, x: u16, rows: u16, separator: char) {
 
 fn dims_of(size: Size, area: Area) -> PaneDims {
     PaneDims {
-        cols: area.w,
-        rows: area.h,
+        // libghostty-vt requires at least one row and column. A half split on
+        // a single-column terminal leaves no room for the main pane, and a
+        // transient zero-sized outer terminal would otherwise propagate
+        // straight into `Terminal::resize`.
+        cols: area.w.max(1),
+        rows: area.h.max(1),
         cell_w: size.cell_w,
         cell_h: size.cell_h,
     }
@@ -1480,6 +1484,24 @@ mod tests {
         let (main, aux) = layout(size(2, 24), Some(AppSize::Half), 0.5);
         assert_eq!(main.w, 1);
         assert_eq!(aux.unwrap().x, 1);
+    }
+
+    #[test]
+    fn pane_dims_never_reach_zero() {
+        let empty = Area {
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+        };
+        let dims = dims_of(size(1, 0), empty);
+        assert_eq!((dims.cols, dims.rows), (1, 1));
+
+        // A half split on a one-column terminal gives the main pane a zero
+        // width; the dimensions fed to libghostty must still be usable.
+        let (main, _) = layout(size(1, 24), Some(AppSize::Half), 0.5);
+        let dims = dims_of(size(1, 24), main);
+        assert_eq!((dims.cols, dims.rows), (1, 24));
     }
 
     #[test]
