@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.4.1](https://github.com/scottmckendry/haunt/compare/haunt-v0.4.0...haunt-v0.4.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* **config:** include ghostty theme in reload ([adc913b](https://github.com/scottmckendry/haunt/commit/adc913b3e1e14bdea65447ef97c00d15f5a00baf))
+* enforce minimum pane width ([91a36fe](https://github.com/scottmckendry/haunt/commit/91a36fe2be8b7c5348c66569e0c2b622fdfc60d4))
+* **input:** cursor up/down on scroll in alternate screen apps ([599c35f](https://github.com/scottmckendry/haunt/commit/599c35f1220d9424babe59f5da78d3f02037fed2))
+* remove 100ms blocking sleep on shutdown ([3b8332c](https://github.com/scottmckendry/haunt/commit/3b8332c717afd8b06992364afcda8767eaafd709))
+
+
+### Performance Improvements
+
+* drop frame pacing in favour damage-tracking ([f96191b](https://github.com/scottmckendry/haunt/commit/f96191b6754c8040ddddbbef01bdcb35e7e9e630))
+* optimise gpu rendering ([28dc764](https://github.com/scottmckendry/haunt/commit/28dc764b4accfc688c2fe6f8cf2fbd0690d98853))
+
 ## [0.4.0](https://github.com/scottmckendry/haunt/compare/haunt-v0.3.1...haunt-v0.4.0) (2026-11-12)
 
 
