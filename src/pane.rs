@@ -461,6 +461,7 @@ impl Pane {
         out: &mut Vec<u8>,
         area: Area,
         focused: bool,
+        scrollable: bool,
         graphics: &mut Graphics,
     ) -> Result<()> {
         self.sync_selection()?;
@@ -480,6 +481,7 @@ impl Pane {
             &mut self.paint_state,
             out,
             area,
+            scrollable,
             self.force_full || graphics_repaint,
         )?;
         if focused {

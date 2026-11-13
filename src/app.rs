@@ -273,47 +273,65 @@ impl App {
             paint_separator(&mut frame, main_area.w, self.size.rows, self.cfg.separator);
         }
 
+        let main_scroll = full_width(main_area, self.size.cols);
         match (self.visible, self.focus, full_aux) {
             (Some(v), _, true) => {
                 if let Some(pane) = self.aux[v].as_mut() {
+                    let area = aux_area.expect("full aux has an area");
                     pane.paint(
                         &mut frame,
-                        aux_area.expect("full aux has an area"),
+                        area,
                         true,
+                        full_width(area, self.size.cols),
                         &mut self.graphics,
                     )?;
                 } else {
-                    self.main
-                        .paint(&mut frame, main_area, true, &mut self.graphics)?;
+                    self.main.paint(
+                        &mut frame,
+                        main_area,
+                        true,
+                        main_scroll,
+                        &mut self.graphics,
+                    )?;
                 }
             }
             (Some(v), Focus::Main, false) => {
                 if let Some(pane) = self.aux[v].as_mut() {
+                    let area = aux_area.expect("visible aux has an area");
                     pane.paint(
                         &mut frame,
-                        aux_area.expect("visible aux has an area"),
+                        area,
                         false,
+                        full_width(area, self.size.cols),
                         &mut self.graphics,
                     )?;
                 }
                 self.main
-                    .paint(&mut frame, main_area, true, &mut self.graphics)?;
+                    .paint(&mut frame, main_area, true, main_scroll, &mut self.graphics)?;
             }
             (Some(v), Focus::Aux, false) => {
-                self.main
-                    .paint(&mut frame, main_area, false, &mut self.graphics)?;
+                self.main.paint(
+                    &mut frame,
+                    main_area,
+                    false,
+                    main_scroll,
+                    &mut self.graphics,
+                )?;
                 if let Some(pane) = self.aux[v].as_mut() {
+                    let area = aux_area.expect("visible aux has an area");
                     pane.paint(
                         &mut frame,
-                        aux_area.expect("visible aux has an area"),
+                        area,
                         true,
+                        full_width(area, self.size.cols),
                         &mut self.graphics,
                     )?;
                 }
             }
-            (None, _, _) => self
-                .main
-                .paint(&mut frame, main_area, true, &mut self.graphics)?,
+            (None, _, _) => {
+                self.main
+                    .paint(&mut frame, main_area, true, main_scroll, &mut self.graphics)?
+            }
         }
 
         notification::paint_notifications(
@@ -1186,6 +1204,14 @@ fn layout(size: Size, visible: Option<AppSize>, ratio: f64) -> (Area, Option<Are
         Some(AppSize::Full) => (full, Some(full)),
         None => (full, None),
     }
+}
+
+/// Whether a pane's rectangle covers every column of the outer terminal.
+///
+/// Only then can a region scroll be used: a terminal scroll region moves whole
+/// rows, so a partial-width pane would disturb the pane beside it.
+fn full_width(area: Area, cols: u16) -> bool {
+    area.x == 0 && area.w == cols
 }
 
 fn hidden_area(size: Size, app_size: AppSize, ratio: f64) -> Area {

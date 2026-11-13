@@ -119,6 +119,17 @@ impl Graphics {
         }
     }
 
+    /// Whether a pane currently has any forwarded image placement.
+    ///
+    /// Scrolling the outer region moves placements with the text. The painter
+    /// must leave scrolls to a cell diff while that is true, because image
+    /// commands are emitted before the cell painting pass.
+    pub fn pane_has_placements(&self, pane_id: u64) -> bool {
+        self.panes
+            .get(&pane_id)
+            .is_some_and(|pane| !pane.placements.is_empty())
+    }
+
     /// Translate the low 24 bits of an inner image ID to the forwarded ID.
     ///
     /// Kitty Unicode placeholders encode the image ID in the cell's

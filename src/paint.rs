@@ -6,10 +6,12 @@
 //! row. Cells with the default background emit no background SGR, preserving
 //! Ghostty's opacity and blur.
 
+use std::collections::{HashMap, HashSet};
+
 use anyhow::Result;
 use libghostty_vt::{
     Error, Terminal,
-    render::{CellIterator, CursorVisualStyle, RowIterator, Snapshot},
+    render::{CellIterator, CursorVisualStyle, RowId, RowIterator, Snapshot},
     screen::{CellWide, cell},
     style::{RgbColor, Style, StyleColor, Underline},
     terminal::{Point, PointCoordinate},
@@ -41,26 +43,75 @@ struct PaintedCell {
     uri: Option<Box<str>>,
 }
 
+/// Vertical movement of the pane's content between two frames.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Scroll {
+    /// Rows moved up; `n` new rows appeared at the bottom.
+    Up(usize),
+    /// Rows moved down; `n` new rows appeared at the top.
+    Down(usize),
+}
+
 /// Painting options that are not part of a snapshot.
 #[derive(Default)]
 pub struct PaintState {
     pub selection_fg: Option<RgbColor>,
     pub selection_bg: Option<RgbColor>,
-    painted: Vec<PaintedCell>,
+    /// Painted cells keyed by row identity. A row keeps its id while it moves,
+    /// so a scroll can reuse the cache instead of rebuilding every row.
+    rows: HashMap<RowId, Vec<PaintedCell>>,
+    /// Row identities in viewport order from the previous frame.
+    row_ids: Vec<RowId>,
     painted_at: Option<Area>,
 }
 
 impl PaintState {
-    /// Whether the cache still describes cells painted at this destination.
-    fn cache_valid(&self, area: Area) -> bool {
-        self.painted_at == Some(area)
-            && self.painted.len() == usize::from(area.w) * usize::from(area.h)
-    }
-
     fn reset_cache(&mut self, area: Area) {
-        self.painted = vec![PaintedCell::default(); usize::from(area.w) * usize::from(area.h)];
+        self.rows.clear();
+        self.row_ids.clear();
         self.painted_at = Some(area);
     }
+}
+
+/// Find a whole-pane vertical scroll by matching stable row ids.
+///
+/// Only a full overlap is accepted, so a fixed header or footer cannot be
+/// mistaken for scrolled content. A changed row breaks the run and falls back
+/// to a cell diff.
+fn find_scroll(old: &[RowId], new: &[RowId]) -> Option<Scroll> {
+    if old.len() != new.len() || old.len() < 2 {
+        return None;
+    }
+    let h = old.len();
+    for n in 1..h {
+        if h - n < 2 {
+            continue;
+        }
+        if (0..h - n).all(|y| new[y] == old[y + n]) {
+            return Some(Scroll::Up(n));
+        }
+        if (n..h).all(|y| new[y] == old[y - n]) {
+            return Some(Scroll::Down(n));
+        }
+    }
+    None
+}
+
+/// Emit a whole-pane scroll and reset the terminal state around it.
+///
+/// The pane must span the full width of the terminal: the terminal's scroll
+/// region is horizontal too, and without left/right margins a region scroll
+/// would move the other side of a split pane.
+fn emit_scroll(out: &mut Vec<u8>, area: Area, scroll: Scroll) {
+    let (n, command) = match scroll {
+        Scroll::Up(n) => (n, 'S'),
+        Scroll::Down(n) => (n, 'T'),
+    };
+    let top = u32::from(area.y) + 1;
+    let bottom = u32::from(area.y) + u32::from(area.h);
+    // Default background for the blank rows the scroll exposes, then scope
+    // the scroll to this pane's rows and restore the full-screen region.
+    out.extend_from_slice(format!("\x1b[0m\x1b[{top};{bottom}r\x1b[{n}{command}\x1b[r").as_bytes());
 }
 
 #[allow(
@@ -77,18 +128,59 @@ pub fn draw<'a>(
     state: &mut PaintState,
     out: &mut Vec<u8>,
     area: Area,
+    scrollable: bool,
     force: bool,
 ) -> Result<()> {
     if area.w == 0 || area.h == 0 {
         return Ok(());
     }
 
-    // A moved or resized pane has no valid cache, so paint every row even if
-    // the render state says only some rows are dirty.
-    let mut full = force;
-    if !state.cache_valid(area) {
+    let full = force || state.painted_at != Some(area);
+    if full {
         state.reset_cache(area);
-        full = true;
+    }
+
+    let width = usize::from(area.w);
+    let height = usize::from(area.h);
+
+    // First pass: collect row identities so a scroll can be recognised before
+    // any content is written. The iterator is restarted for the paint pass.
+    let mut row_ids = Vec::with_capacity(height);
+    {
+        let mut rows = row_it.update(snapshot)?;
+        while row_ids.len() < height {
+            let Some(row) = rows.next() else { break };
+            row_ids.push(row.id()?);
+        }
+    }
+
+    let scroll = if !full
+        && scrollable
+        && !graphics.pane_has_placements(pane_id)
+        && row_ids.len() == height
+        && state.row_ids.len() == height
+    {
+        find_scroll(&state.row_ids, &row_ids)
+    } else {
+        None
+    };
+
+    let mut force_rows = vec![false; height];
+    if let Some(scroll) = scroll {
+        emit_scroll(out, area, scroll);
+        match scroll {
+            // The scroll placed these rows correctly; the new rows at the
+            // trailing edge are blank and must be painted in full.
+            Scroll::Up(n) => force_rows[height - n..].fill(true),
+            Scroll::Down(n) => force_rows[..n].fill(true),
+        }
+    } else {
+        // Without a scroll, a row cache is only reusable at the same viewport
+        // position. A row that moved must be painted in full because the outer
+        // terminal still has its old content at the new position.
+        for (y, flag) in force_rows.iter_mut().enumerate() {
+            *flag = full || state.row_ids.get(y) != row_ids.get(y);
+        }
     }
 
     let mut row_iter = row_it.update(snapshot)?;
@@ -99,12 +191,24 @@ pub fn draw<'a>(
     let mut y = 0u16;
 
     while let Some(row) = row_iter.next() {
-        if y >= area.h {
+        if usize::from(y) >= height {
             break;
         }
-        if !full && !row.dirty()? {
+        let id = row_ids[usize::from(y)];
+        let row_forced = force_rows[usize::from(y)];
+        let found = state.rows.contains_key(&id);
+        if !row_forced && found && !row.dirty()? {
             y += 1;
             continue;
+        }
+
+        let row_full = full || row_forced || !found;
+        let mut cache = match state.rows.remove(&id) {
+            Some(cache) => cache,
+            None => vec![PaintedCell::default(); width],
+        };
+        if cache.len() != width {
+            cache = vec![PaintedCell::default(); width];
         }
 
         let selection = row.selection()?;
@@ -189,12 +293,11 @@ pub fn draw<'a>(
             }
             let width = if text == " " { 1 } else { width };
 
-            // Compare against the cell last written at this position. A dirty
-            // row is only a hint: most of its cells are usually unchanged, and
+            // Compare against the cell last written for this row. A dirty row
+            // is only a hint: most of its cells are usually unchanged, and
             // rewriting them makes outer Ghostty redraw the whole row.
-            let index = usize::from(y) * usize::from(area.w) + usize::from(x);
-            let cached = &state.painted[index];
-            let changed = full
+            let cached = &cache[usize::from(x)];
+            let changed = row_full
                 || cached.text.as_ref() != text
                 || cached.width != width
                 || cached.sgr != sgr
@@ -219,10 +322,10 @@ pub fn draw<'a>(
                     sgr,
                     uri: uri.map(Into::into),
                 };
-                state.painted[index] = painted;
+                cache[usize::from(x)] = painted;
                 if width > 1 {
                     for tail in 1..usize::from(width) {
-                        state.painted[index + tail] = PaintedCell::default();
+                        cache[usize::from(x) + tail] = PaintedCell::default();
                     }
                 }
             }
@@ -231,12 +334,19 @@ pub fn draw<'a>(
         }
 
         row.set_dirty(false)?;
+        state.rows.insert(id, cache);
         y += 1;
     }
 
     if last_uri.is_some() {
         set_hyperlink(out, None);
     }
+
+    // Row ids that left the viewport (or were replaced in place) can never
+    // return, so drop their cells.
+    let current: HashSet<RowId> = row_ids.iter().copied().collect();
+    state.rows.retain(|id, _| current.contains(id));
+    state.row_ids = row_ids;
 
     Ok(())
 }
@@ -517,6 +627,30 @@ mod tests {
         state: &mut PaintState,
         out: &mut Vec<u8>,
     ) -> Result<()> {
+        draw_term_with(term, render_state, rows, cells, state, out, false)
+    }
+
+    fn draw_term_scrolling(
+        term: &Terminal<'static, 'static>,
+        render_state: &mut RenderState<'static>,
+        rows: &mut RowIterator<'static>,
+        cells: &mut CellIterator<'static>,
+        state: &mut PaintState,
+        out: &mut Vec<u8>,
+    ) -> Result<()> {
+        draw_term_with(term, render_state, rows, cells, state, out, true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_term_with(
+        term: &Terminal<'static, 'static>,
+        render_state: &mut RenderState<'static>,
+        rows: &mut RowIterator<'static>,
+        cells: &mut CellIterator<'static>,
+        state: &mut PaintState,
+        out: &mut Vec<u8>,
+        scrollable: bool,
+    ) -> Result<()> {
         let snapshot = render_state.update(term)?;
         let graphics = Graphics::new()?;
         draw(
@@ -529,6 +663,7 @@ mod tests {
             state,
             out,
             area(20, 4),
+            scrollable,
             false,
         )
     }
@@ -621,6 +756,51 @@ mod tests {
         )
         .unwrap();
         assert!(second.is_empty(), "dirty rows were repainted: {second:?}");
+    }
+
+    #[test]
+    fn scrolling_uses_a_region_scroll() {
+        let mut term = term_with(b"a\r\nb\r\nc\r\nd");
+        let mut render_state = RenderState::new().unwrap();
+        let mut rows = RowIterator::new().unwrap();
+        let mut cells = CellIterator::new().unwrap();
+        let mut state = PaintState::default();
+
+        let mut first = Vec::new();
+        draw_term_scrolling(
+            &term,
+            &mut render_state,
+            &mut rows,
+            &mut cells,
+            &mut state,
+            &mut first,
+        )
+        .unwrap();
+        assert!(!first.is_empty());
+
+        // A newline at the bottom scrolls the four-row screen up by one.
+        term.vt_write(b"\r\ne");
+        let mut second = Vec::new();
+        draw_term_scrolling(
+            &term,
+            &mut render_state,
+            &mut rows,
+            &mut cells,
+            &mut state,
+            &mut second,
+        )
+        .unwrap();
+
+        let text = String::from_utf8_lossy(&second);
+        assert!(
+            text.contains("\x1b[1;4r\x1b[1S"),
+            "region scroll missing: {text:?}"
+        );
+        assert!(text.contains('e'), "new row was not painted: {text:?}");
+        assert!(
+            !text.contains('a'),
+            "scrolled-off row was repainted: {text:?}"
+        );
     }
 
     #[test]
@@ -832,6 +1012,7 @@ mod tests {
             &mut PaintState::default(),
             &mut out,
             area,
+            false,
             true,
         )
         .unwrap();
