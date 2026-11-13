@@ -2,6 +2,7 @@ use std::{
     env,
     io::{self, Read, Write},
     path::Path,
+    sync::{OnceLock, mpsc},
 };
 
 use anyhow::Result;
@@ -17,28 +18,83 @@ impl ChildGuard {
         Ok(status)
     }
 
+    /// Queue the child for shutdown without blocking the caller.
+    ///
+    /// The grace period, final signal, and reaping all happen on the reaper
+    /// thread so tearing down a pane never stalls rendering or input.
     pub fn shutdown(&mut self) {
-        let Some(mut child) = self.0.take() else {
+        let Some(child) = self.0.take() else {
             return;
         };
-
-        // portable-pty makes the child a session leader, so its pid is also
-        // the session id. Interactive shells put each job in its own process
-        // group, so signalling only `-pid` would leave those jobs running.
-        // Signal every process still in the session instead.
-        if let Some(pid) = child.process_id() {
-            let sid = pid as libc::pid_t;
-            signal_session(sid, libc::SIGHUP);
-            // Give shells and well-behaved jobs a moment to exit cleanly
-            // before killing anything that ignored the hangup. Reap only
-            // after the final signal so the session id cannot be reused.
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            signal_session(sid, libc::SIGKILL);
-        } else {
-            let _ = child.kill();
+        let sid = child.process_id().map(|pid| pid as libc::pid_t);
+        let job = ReapJob::Terminate { child, sid };
+        if let Err(mpsc::SendError(ReapJob::Terminate { mut child, sid })) = reaper().send(job) {
+            // The reaper is gone; finish synchronously so the child cannot
+            // outlive us.
+            terminate(child.as_mut(), sid);
         }
-        let _ = child.wait();
     }
+}
+
+enum ReapJob {
+    Terminate {
+        child: Box<dyn Child + Send + Sync>,
+        sid: Option<libc::pid_t>,
+    },
+    /// Wait for every job queued before this one to finish.
+    Flush(mpsc::Sender<()>),
+}
+
+fn reaper() -> &'static mpsc::Sender<ReapJob> {
+    static REAPER: OnceLock<mpsc::Sender<ReapJob>> = OnceLock::new();
+    REAPER.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<ReapJob>();
+        std::thread::Builder::new()
+            .name("haunt-pty-reaper".into())
+            .spawn(move || {
+                while let Ok(job) = rx.recv() {
+                    match job {
+                        ReapJob::Terminate { mut child, sid } => {
+                            terminate(child.as_mut(), sid);
+                        }
+                        ReapJob::Flush(done) => {
+                            let _ = done.send(());
+                        }
+                    }
+                }
+            })
+            .expect("failed to start pty reaper thread");
+        tx
+    })
+}
+
+/// Block until all previously queued child shutdowns have completed.
+///
+/// Call this before process exit so children still receive their final signal
+/// and are reaped even though normal shutdown is asynchronous.
+pub fn flush_shutdowns() {
+    let (done, wait) = mpsc::channel();
+    if reaper().send(ReapJob::Flush(done)).is_ok() {
+        let _ = wait.recv();
+    }
+}
+
+fn terminate(child: &mut dyn Child, sid: Option<libc::pid_t>) {
+    // portable-pty makes the child a session leader, so its pid is also the
+    // session id. Interactive shells put each job in its own process group,
+    // so signalling only `-pid` would leave those jobs running. Signal every
+    // process still in the session instead.
+    if let Some(sid) = sid {
+        signal_session(sid, libc::SIGHUP);
+        // Give shells and well-behaved jobs a moment to exit cleanly before
+        // killing anything that ignored the hangup. Reap only after the final
+        // signal so the session id cannot be reused.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        signal_session(sid, libc::SIGKILL);
+    } else {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
 }
 
 /// Signal the child's process group and every other process in its session.
@@ -186,6 +242,7 @@ mod tests {
             panic!("simulate setup failure");
         }));
         assert!(result.is_err());
+        flush_shutdowns();
         assert!(!Path::new(&format!("/proc/{pid}")).exists());
     }
 
@@ -212,6 +269,7 @@ mod tests {
         assert!(Path::new(&format!("/proc/{descendant}")).exists());
 
         pty.child.shutdown();
+        flush_shutdowns();
         std::fs::remove_file(&path).ok();
         // SIGKILL makes the descendant a zombie until its new parent reaps
         // it, so allow /proc to settle before asserting it is gone.

@@ -393,6 +393,9 @@ impl App {
         for pane in self.aux.iter_mut().flatten() {
             pane.shutdown();
         }
+        // Shutdowns are queued to the reaper; wait for them at process exit so
+        // children still receive their final signal and are reaped.
+        crate::pty::flush_shutdowns();
     }
 
     fn on_key(&mut self, ev: KeyEvent) -> Result<()> {

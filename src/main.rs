@@ -30,7 +30,11 @@ use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 use app::{App, Msg};
 
 fn main() -> ExitCode {
-    match run() {
+    let result = run();
+    // Also covers an early error return, where the app (and its panes) may
+    // have been dropped before `run` reached its own shutdown path.
+    pty::flush_shutdowns();
+    match result {
         Ok(code) => ExitCode::from((code & 0xff) as u8),
         Err(err) => {
             // The terminal guard has already restored the outer terminal, so
