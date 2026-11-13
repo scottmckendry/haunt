@@ -477,7 +477,7 @@ impl Pane {
             self.id,
             &mut self.rows_it,
             &mut self.cells_it,
-            &self.paint_state,
+            &mut self.paint_state,
             out,
             area,
             self.force_full || graphics_repaint,

@@ -1,9 +1,10 @@
 //! Turn a libghostty-vt render-state snapshot into ANSI output for Ghostty.
 //!
-//! Only dirty rows are repainted, and every cell in a dirty row is written,
-//! including blank cells. This clears stale glyphs without `ED 2`, which would
-//! also delete Ghostty's Kitty image storage. Cells with the default
-//! background emit no background SGR, preserving Ghostty's opacity and blur.
+//! Dirty rows are repainted, but only the cells whose glyph, style, hyperlink
+//! or width actually changed are written. The diff is against the last frame
+//! this pane painted, so a one-cell update costs one cell rather than a whole
+//! row. Cells with the default background emit no background SGR, preserving
+//! Ghostty's opacity and blur.
 
 use anyhow::Result;
 use libghostty_vt::{
@@ -30,11 +31,36 @@ pub struct Area {
     pub h: u16,
 }
 
+/// A cell as it was last written to the outer terminal.
+#[derive(Clone, Default, PartialEq, Eq)]
+struct PaintedCell {
+    text: Box<str>,
+    /// 0 marks the second column of a wide glyph, which has no cell of its own.
+    width: u16,
+    sgr: Sgr,
+    uri: Option<Box<str>>,
+}
+
 /// Painting options that are not part of a snapshot.
 #[derive(Default)]
 pub struct PaintState {
     pub selection_fg: Option<RgbColor>,
     pub selection_bg: Option<RgbColor>,
+    painted: Vec<PaintedCell>,
+    painted_at: Option<Area>,
+}
+
+impl PaintState {
+    /// Whether the cache still describes cells painted at this destination.
+    fn cache_valid(&self, area: Area) -> bool {
+        self.painted_at == Some(area)
+            && self.painted.len() == usize::from(area.w) * usize::from(area.h)
+    }
+
+    fn reset_cache(&mut self, area: Area) {
+        self.painted = vec![PaintedCell::default(); usize::from(area.w) * usize::from(area.h)];
+        self.painted_at = Some(area);
+    }
 }
 
 #[allow(
@@ -48,13 +74,21 @@ pub fn draw<'a>(
     pane_id: u64,
     row_it: &mut RowIterator<'a>,
     cell_it: &mut CellIterator<'a>,
-    state: &PaintState,
+    state: &mut PaintState,
     out: &mut Vec<u8>,
     area: Area,
     force: bool,
 ) -> Result<()> {
     if area.w == 0 || area.h == 0 {
         return Ok(());
+    }
+
+    // A moved or resized pane has no valid cache, so paint every row even if
+    // the render state says only some rows are dirty.
+    let mut full = force;
+    if !state.cache_valid(area) {
+        state.reset_cache(area);
+        full = true;
     }
 
     let mut row_iter = row_it.update(snapshot)?;
@@ -68,7 +102,7 @@ pub fn draw<'a>(
         if y >= area.h {
             break;
         }
-        if !force && !row.dirty()? {
+        if !full && !row.dirty()? {
             y += 1;
             continue;
         }
@@ -123,10 +157,6 @@ pub fn draw<'a>(
             } else {
                 None
             };
-            if uri != last_uri {
-                set_hyperlink(out, uri.as_deref());
-                last_uri = uri;
-            }
 
             text.clear();
             cell.graphemes_utf8(&mut text)?;
@@ -159,13 +189,43 @@ pub fn draw<'a>(
             }
             let width = if text == " " { 1 } else { width };
 
-            if last_sgr != Some(sgr) {
-                emit_sgr(out, &sgr);
-                last_sgr = Some(sgr);
+            // Compare against the cell last written at this position. A dirty
+            // row is only a hint: most of its cells are usually unchanged, and
+            // rewriting them makes outer Ghostty redraw the whole row.
+            let index = usize::from(y) * usize::from(area.w) + usize::from(x);
+            let cached = &state.painted[index];
+            let changed = full
+                || cached.text.as_ref() != text
+                || cached.width != width
+                || cached.sgr != sgr
+                || cached.uri.as_deref() != uri.as_deref();
+
+            if changed {
+                if uri.as_deref() != last_uri.as_deref() {
+                    set_hyperlink(out, uri.as_deref());
+                    last_uri = uri.clone();
+                }
+                if last_sgr != Some(sgr) {
+                    emit_sgr(out, &sgr);
+                    last_sgr = Some(sgr);
+                }
+                move_to(out, area.y + y, area.x + x, &mut cur_col);
+                out.extend_from_slice(text.as_bytes());
+                cur_col = Some(area.x + x + width);
+
+                let painted = PaintedCell {
+                    text: text.clone().into_boxed_str(),
+                    width,
+                    sgr,
+                    uri: uri.map(Into::into),
+                };
+                state.painted[index] = painted;
+                if width > 1 {
+                    for tail in 1..usize::from(width) {
+                        state.painted[index + tail] = PaintedCell::default();
+                    }
+                }
             }
-            move_to(out, area.y + y, area.x + x, &mut cur_col);
-            out.extend_from_slice(text.as_bytes());
-            cur_col = Some(area.x + x + width);
 
             x += width;
         }
@@ -269,7 +329,7 @@ pub fn draw_cursor(snapshot: &Snapshot<'_, '_>, out: &mut Vec<u8>, area: Area) -
     Ok(())
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
 struct Sgr {
     bold: bool,
     faint: bool,
@@ -454,7 +514,7 @@ mod tests {
         render_state: &mut RenderState<'static>,
         rows: &mut RowIterator<'static>,
         cells: &mut CellIterator<'static>,
-        state: &PaintState,
+        state: &mut PaintState,
         out: &mut Vec<u8>,
     ) -> Result<()> {
         let snapshot = render_state.update(term)?;
@@ -496,7 +556,7 @@ mod tests {
             &mut render_state,
             &mut rows,
             &mut cells,
-            &PaintState::default(),
+            &mut PaintState::default(),
             &mut out,
         )
         .unwrap();
@@ -517,7 +577,7 @@ mod tests {
             &mut render_state,
             &mut rows,
             &mut cells,
-            &PaintState::default(),
+            &mut PaintState::default(),
             &mut out,
         )
         .unwrap();
@@ -536,6 +596,7 @@ mod tests {
         let mut render_state = RenderState::new().unwrap();
         let mut rows = RowIterator::new().unwrap();
         let mut cells = CellIterator::new().unwrap();
+        let mut state = PaintState::default();
 
         let mut first = Vec::new();
         draw_term(
@@ -543,7 +604,7 @@ mod tests {
             &mut render_state,
             &mut rows,
             &mut cells,
-            &PaintState::default(),
+            &mut state,
             &mut first,
         )
         .unwrap();
@@ -555,11 +616,55 @@ mod tests {
             &mut render_state,
             &mut rows,
             &mut cells,
-            &PaintState::default(),
+            &mut state,
             &mut second,
         )
         .unwrap();
         assert!(second.is_empty(), "dirty rows were repainted: {second:?}");
+    }
+
+    #[test]
+    fn only_changed_cells_are_painted() {
+        let mut term = term_with(b"hello world");
+        let mut render_state = RenderState::new().unwrap();
+        let mut rows = RowIterator::new().unwrap();
+        let mut cells = CellIterator::new().unwrap();
+        let mut state = PaintState::default();
+
+        let mut first = Vec::new();
+        draw_term(
+            &term,
+            &mut render_state,
+            &mut rows,
+            &mut cells,
+            &mut state,
+            &mut first,
+        )
+        .unwrap();
+
+        // Replace the 'e' with an 'X'; the rest of the row is unchanged.
+        term.vt_write(b"\x1b[1;2HX");
+        let mut second = Vec::new();
+        draw_term(
+            &term,
+            &mut render_state,
+            &mut rows,
+            &mut cells,
+            &mut state,
+            &mut second,
+        )
+        .unwrap();
+
+        let text = String::from_utf8_lossy(&second);
+        assert!(text.contains('X'), "changed cell was not painted: {text:?}");
+        assert!(
+            !text.contains("ello"),
+            "unchanged cells were painted: {text:?}"
+        );
+        assert!(
+            !text.contains("world"),
+            "unchanged cells were painted: {text:?}"
+        );
     }
 
     #[test]
@@ -568,13 +673,14 @@ mod tests {
         let mut render_state = RenderState::new().unwrap();
         let mut rows = RowIterator::new().unwrap();
         let mut cells = CellIterator::new().unwrap();
+        let mut state = PaintState::default();
         let mut first = Vec::new();
         draw_term(
             &term,
             &mut render_state,
             &mut rows,
             &mut cells,
-            &PaintState::default(),
+            &mut state,
             &mut first,
         )
         .unwrap();
@@ -586,7 +692,7 @@ mod tests {
             &mut render_state,
             &mut rows,
             &mut cells,
-            &PaintState::default(),
+            &mut state,
             &mut second,
         )
         .unwrap();
@@ -603,13 +709,14 @@ mod tests {
         let term = term_with(b"hello");
         select(&term, 0, 9);
 
-        let state = PaintState {
+        let mut state = PaintState {
             selection_fg: None,
             selection_bg: Some(RgbColor {
                 r: 0x3c,
                 g: 0x40,
                 b: 0x48,
             }),
+            ..PaintState::default()
         };
         let mut render_state = RenderState::new().unwrap();
         let mut rows = RowIterator::new().unwrap();
@@ -620,7 +727,7 @@ mod tests {
             &mut render_state,
             &mut rows,
             &mut cells,
-            &state,
+            &mut state,
             &mut out,
         )
         .unwrap();
@@ -644,7 +751,7 @@ mod tests {
             &mut render_state,
             &mut rows,
             &mut cells,
-            &PaintState::default(),
+            &mut PaintState::default(),
             &mut out,
         )
         .unwrap();
@@ -675,7 +782,7 @@ mod tests {
             &mut render_state,
             &mut rows,
             &mut cells,
-            &PaintState::default(),
+            &mut PaintState::default(),
             &mut out,
         )
         .unwrap();
@@ -722,7 +829,7 @@ mod tests {
             1,
             &mut rows,
             &mut cells,
-            &PaintState::default(),
+            &mut PaintState::default(),
             &mut out,
             area,
             true,
@@ -750,7 +857,7 @@ mod tests {
             &mut render_state,
             &mut rows,
             &mut cells,
-            &PaintState::default(),
+            &mut PaintState::default(),
             &mut out,
         )
         .unwrap();

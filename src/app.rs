@@ -247,7 +247,6 @@ impl App {
         // at 60 Hz a fresh allocation per frame adds avoidable churn.
         let mut frame = std::mem::take(&mut self.frame_buf);
         frame.clear();
-        frame.extend_from_slice(b"\x1b[?2026h");
 
         let mut visible_ids = [self.main.id; 2];
         let visible: &[u64] = match (self.visible, full_aux) {
@@ -325,8 +324,17 @@ impl App {
             Instant::now(),
         );
 
-        frame.extend_from_slice(b"\x1b[?2026l");
-        out.write_all(&frame)?;
+        // Synchronized output keeps a large repaint from being shown half
+        // drawn. Small diffs are safe to write directly, and avoiding the
+        // atomic commit keeps Ghostty from rendering each sync block at the
+        // display refresh rate.
+        if frame.len() > SYNC_THRESHOLD {
+            out.write_all(b"\x1b[?2026h")?;
+            out.write_all(&frame)?;
+            out.write_all(b"\x1b[?2026l")?;
+        } else {
+            out.write_all(&frame)?;
+        }
         out.flush()?;
         self.frame_dirty = false;
         // Keep the buffer for reuse, but do not pin memory after an unusually
@@ -1277,7 +1285,15 @@ pub fn channel() -> (SyncSender<Msg>, std::sync::mpsc::Receiver<Msg>) {
 }
 
 /// Sleep for one event-loop tick.
+///
+/// This only paces an idle loop. Rendering is not capped: the outer terminal
+/// already coalesces damage to its own refresh rate, and a fixed frame cap
+/// would hobble high-refresh displays (or waste work on low-refresh ones).
 pub const TICK: Duration = Duration::from_millis(16);
+
+/// Frames larger than this are wrapped in synchronized output. A small diff
+/// does not need the atomic commit; large repaints still get it.
+const SYNC_THRESHOLD: usize = 4096;
 
 #[cfg(test)]
 mod tests {
