@@ -773,8 +773,8 @@ impl App {
         }
 
         match ev.kind {
-            MouseEventKind::ScrollUp => pane.scroll(-3),
-            MouseEventKind::ScrollDown => pane.scroll(3),
+            MouseEventKind::ScrollUp => pane.wheel_scroll(-3),
+            MouseEventKind::ScrollDown => pane.wheel_scroll(3),
             _ => Ok(()),
         }
     }

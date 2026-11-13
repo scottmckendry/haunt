@@ -14,7 +14,7 @@ use libghostty_vt::{
     fmt::Formatter,
     mouse,
     render::{CellIterator, RowIterator},
-    screen::TrackedGridRef,
+    screen::{Screen, TrackedGridRef},
     selection::{SelectLineOptions, SelectWordBetweenOptions, Selection},
     terminal::{
         ClipboardLocation, ClipboardWrite, ConformanceLevel, DeviceAttributeFeature,
@@ -567,6 +567,33 @@ impl Pane {
         self.mouse_encoder
             .encode_to_vec(&self.mouse_event, &mut buf)?;
         self.send(&buf)
+    }
+
+    /// Handle a wheel notch, scrolling scrollback or emulating cursor keys.
+    ///
+    /// Alternate-screen programs that do not request mouse reporting (such as
+    /// `less`, `man`, and `vim`) expect the wheel to arrive as Up/Down keys,
+    /// because the alternate screen has no scrollback to move.
+    pub fn wheel_scroll(&mut self, delta: isize) -> Result<()> {
+        if self
+            .term
+            .active_screen()
+            .is_ok_and(|screen| screen == Screen::Alternate)
+        {
+            let up = delta < 0;
+            let key: &[u8] = match (up, self.mode(Mode::DECCKM)) {
+                (true, true) => b"\x1bOA",
+                (true, false) => b"\x1b[A",
+                (false, true) => b"\x1bOB",
+                (false, false) => b"\x1b[B",
+            };
+            let mut buf = Vec::with_capacity(delta.unsigned_abs() * key.len());
+            for _ in 0..delta.unsigned_abs() {
+                buf.extend_from_slice(key);
+            }
+            return self.send(&buf);
+        }
+        self.scroll(delta)
     }
 
     /// Scroll the viewport by `delta` rows (negative is up).
@@ -1232,6 +1259,48 @@ mod tests {
 
         pane.scroll_to_live();
         assert_eq!(pane.term().scrollbar().unwrap().offset, bottom.offset);
+
+        pane.shutdown();
+    }
+
+    #[test]
+    fn alternate_screen_wheel_emulates_cursor_keys() {
+        let (mut pane, _reader) = Pane::spawn(
+            2,
+            &["/bin/sh".to_string()],
+            None,
+            PaneDims {
+                cols: 20,
+                rows: 5,
+                cell_w: 8,
+                cell_h: 16,
+            },
+            None,
+        )
+        .unwrap();
+        let written = Arc::new(Mutex::new(Vec::new()));
+        pane.writer = Arc::new(Mutex::new(Box::new(SharedWriter(Arc::clone(&written)))));
+
+        for i in 0..50 {
+            pane.feed(format!("line {i}\r\n").as_bytes()).unwrap();
+        }
+        let bottom = pane.term().scrollbar().unwrap();
+        written.lock().unwrap().clear();
+        pane.wheel_scroll(-3).unwrap();
+        assert_eq!(pane.term().scrollbar().unwrap().offset, bottom.offset - 3);
+        assert!(written.lock().unwrap().is_empty());
+
+        // Alternate-screen apps without mouse reporting get cursor keys.
+        pane.feed(b"\x1b[?1049h").unwrap();
+        written.lock().unwrap().clear();
+        pane.wheel_scroll(-3).unwrap();
+        assert_eq!(written.lock().unwrap().as_slice(), b"\x1b[A\x1b[A\x1b[A");
+
+        // DECCKM switches to the application cursor-key encoding.
+        pane.feed(b"\x1b[?1h").unwrap();
+        written.lock().unwrap().clear();
+        pane.wheel_scroll(2).unwrap();
+        assert_eq!(written.lock().unwrap().as_slice(), b"\x1bOB\x1bOB");
 
         pane.shutdown();
     }
