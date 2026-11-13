@@ -25,7 +25,7 @@ use crossterm::{
     cursor, event, execute, style,
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM, SIGUSR1, SIGUSR2};
 
 use app::{App, Msg};
 
@@ -100,12 +100,17 @@ fn run() -> Result<i32> {
         // Signals that should still restore the outer terminal.
         let tx = tx.clone();
         thread::spawn(move || {
-            let Ok(mut signals) = signal_hook::iterator::Signals::new([SIGHUP, SIGINT, SIGTERM])
+            let Ok(mut signals) =
+                signal_hook::iterator::Signals::new([SIGHUP, SIGINT, SIGTERM, SIGUSR1, SIGUSR2])
             else {
                 return;
             };
             for signal in signals.forever() {
-                if tx.send(Msg::Signal(signal)).is_err() {
+                let msg = match signal {
+                    SIGUSR1 | SIGUSR2 => Msg::RefreshTheme,
+                    _ => Msg::Signal(signal),
+                };
+                if tx.send(msg).is_err() {
                     break;
                 }
             }

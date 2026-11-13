@@ -102,6 +102,15 @@ impl Theme {
         Ok(())
     }
 
+    /// Remove inherited defaults, restoring libghostty-vt's own colours.
+    pub fn clear(term: &mut Terminal<'_, '_>) -> Result<()> {
+        term.set_default_fg_color(None)?
+            .set_default_bg_color(None)?
+            .set_default_cursor_color(None)?
+            .set_default_color_palette(None)?;
+        Ok(())
+    }
+
     /// The colour scheme to report for `CSI ? 996 n` (and mode 2031).
     ///
     /// Uses the same luminance threshold Ghostty uses to classify its

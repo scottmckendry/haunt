@@ -17,7 +17,7 @@ use libghostty_vt::{
     screen::{Screen, TrackedGridRef},
     selection::{SelectLineOptions, SelectWordBetweenOptions, Selection},
     terminal::{
-        ClipboardLocation, ClipboardWrite, ConformanceLevel, DeviceAttributeFeature,
+        ClipboardLocation, ClipboardWrite, ColorScheme, ConformanceLevel, DeviceAttributeFeature,
         DeviceAttributes, DeviceType, Mode, Point, PointCoordinate, PrimaryDeviceAttributes,
         ProgressState as VtProgressState, ScrollViewport, SecondaryDeviceAttributes,
         SizeReportSize,
@@ -165,6 +165,7 @@ pub struct Pane {
     title: Arc<Mutex<Option<String>>>,
     dims: Arc<Mutex<PaneDims>>,
     progress: Arc<Mutex<ProgressTracking>>,
+    scheme: Arc<Mutex<Option<ColorScheme>>>,
     mouse_encoder: mouse::Encoder<'static>,
     mouse_event: mouse::Event<'static>,
     mouse_down: bool,
@@ -332,7 +333,11 @@ impl Pane {
             })
         })?;
         term.on_xtversion(|_term| Some(outer_terminal_identity()))?;
-        term.on_color_scheme(move |_term| theme.and_then(Theme::scheme))?;
+        let scheme = Arc::new(Mutex::new(theme.and_then(Theme::scheme)));
+        {
+            let scheme = Arc::clone(&scheme);
+            term.on_color_scheme(move |_term| *scheme.lock().unwrap())?;
+        }
 
         let mut paint_state = PaintState::default();
         if let Some(theme) = theme {
@@ -356,6 +361,7 @@ impl Pane {
                 title,
                 dims: dims_shared,
                 progress,
+                scheme,
                 mouse_encoder: mouse::Encoder::new()?,
                 mouse_event: mouse::Event::new()?,
                 mouse_down: false,
@@ -500,6 +506,22 @@ impl Pane {
 
     pub fn term(&self) -> &Terminal<'static, 'static> {
         &self.term
+    }
+
+    /// Install a refreshed theme and repaint the pane with it.
+    pub fn apply_theme(&mut self, theme: Option<Theme>) -> Result<()> {
+        if let Some(theme) = theme {
+            theme.apply(&mut self.term)?;
+            self.paint_state.selection_fg = theme.selection_fg;
+            self.paint_state.selection_bg = theme.selection_bg;
+        } else {
+            Theme::clear(&mut self.term)?;
+            self.paint_state.selection_fg = None;
+            self.paint_state.selection_bg = None;
+        }
+        *self.scheme.lock().unwrap() = theme.and_then(Theme::scheme);
+        self.force_repaint();
+        Ok(())
     }
     /// Whether the inner program asked for mouse reporting.
     pub fn tracks_mouse(&self) -> bool {
@@ -1259,6 +1281,62 @@ mod tests {
 
         pane.scroll_to_live();
         assert_eq!(pane.term().scrollbar().unwrap().offset, bottom.offset);
+
+        pane.shutdown();
+    }
+
+    #[test]
+    fn applying_a_theme_updates_defaults_and_selection_colours() {
+        use libghostty_vt::style::RgbColor;
+
+        let (mut pane, _reader) = Pane::spawn(
+            2,
+            &["/bin/sh".to_string()],
+            None,
+            PaneDims {
+                cols: 20,
+                rows: 5,
+                cell_w: 8,
+                cell_h: 16,
+            },
+            None,
+        )
+        .unwrap();
+        let written = Arc::new(Mutex::new(Vec::new()));
+        pane.writer = Arc::new(Mutex::new(Box::new(SharedWriter(Arc::clone(&written)))));
+
+        let theme = Theme {
+            bg: Some(RgbColor {
+                r: 0x12,
+                g: 0x34,
+                b: 0x56,
+            }),
+            selection_fg: Some(RgbColor {
+                r: 0xff,
+                g: 0xff,
+                b: 0xff,
+            }),
+            selection_bg: Some(RgbColor {
+                r: 0x65,
+                g: 0x43,
+                b: 0x21,
+            }),
+            ..Default::default()
+        };
+        pane.apply_theme(Some(theme)).unwrap();
+        assert_eq!(pane.paint_state.selection_bg, theme.selection_bg);
+        assert!(pane.dirty);
+        pane.feed(b"\x1b]11;?\x1b\\").unwrap();
+        let got = String::from_utf8_lossy(&written.lock().unwrap()).to_string();
+        assert!(got.contains("]11;rgb:1212/3434/5656"), "got {got:?}");
+
+        written.lock().unwrap().clear();
+        pane.apply_theme(None).unwrap();
+        assert_eq!(pane.paint_state.selection_fg, None);
+        assert_eq!(pane.paint_state.selection_bg, None);
+        pane.feed(b"\x1b]11;?\x1b\\").unwrap();
+        let got = String::from_utf8_lossy(&written.lock().unwrap()).to_string();
+        assert!(!got.contains("]11;rgb:1212/3434/5656"), "got {got:?}");
 
         pane.shutdown();
     }

@@ -57,6 +57,10 @@ pub enum Msg {
     PaneEof(u64),
     Input(Event),
     Signal(i32),
+    /// Re-read the outer Ghostty theme on a background thread.
+    RefreshTheme,
+    /// A theme loaded in response to a reload or refresh signal.
+    Theme(Box<Option<Theme>>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,6 +208,8 @@ impl App {
                 self.exit_code = 128 + signal;
                 self.running = false;
             }
+            Msg::RefreshTheme => self.refresh_theme(),
+            Msg::Theme(theme) => self.set_theme(*theme)?,
         }
         self.sync_progress(progress_changed)?;
         self.sync_title();
@@ -455,6 +461,9 @@ impl App {
     }
 
     fn reload_config(&mut self) -> Result<()> {
+        // Ghostty's theme may have changed at the same time; re-read it off
+        // the event loop so the reload stays responsive.
+        self.refresh_theme();
         let cfg = match Config::reload() {
             Ok(cfg) => cfg,
             Err(err) => {
@@ -486,6 +495,25 @@ impl App {
         }
         self.relayout()?;
         self.push_notification(NotificationKind::Success("Configuration reloaded".into()));
+        Ok(())
+    }
+
+    /// Read the outer Ghostty theme without blocking the event loop.
+    fn refresh_theme(&self) {
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let _ = tx.send(Msg::Theme(Box::new(Theme::load())));
+        });
+    }
+
+    /// Install a freshly loaded theme in every running pane.
+    fn set_theme(&mut self, theme: Option<Theme>) -> Result<()> {
+        self.theme = theme;
+        self.main.apply_theme(theme)?;
+        for pane in self.aux.iter_mut().flatten() {
+            pane.apply_theme(theme)?;
+        }
+        self.frame_dirty = true;
         Ok(())
     }
 
