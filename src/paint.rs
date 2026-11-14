@@ -33,10 +33,60 @@ pub struct Area {
     pub h: u16,
 }
 
+/// Inline capacity for [`CellText`]. 23 bytes plus the length byte keeps the
+/// inline variant at 24 bytes; almost every cell is a single ASCII grapheme.
+const INLINE_CAP: usize = 23;
+
+/// Text of a painted cell: inline for short graphemes (the overwhelmingly
+/// common case), heap only for rare long sequences. Keeps the render loop
+/// allocation-free for ASCII and CJK cells.
+#[derive(Clone, Debug, Default, Eq)]
+struct CellText {
+    inline: [u8; INLINE_CAP],
+    /// Number of bytes of `inline` in use; ignored when `long` is set.
+    len: u8,
+    long: Option<Box<str>>,
+}
+
+impl CellText {
+    fn new(text: &str) -> Self {
+        let bytes = text.as_bytes();
+        if bytes.len() <= INLINE_CAP {
+            let mut inline = [0u8; INLINE_CAP];
+            inline[..bytes.len()].copy_from_slice(bytes);
+            Self {
+                inline,
+                len: bytes.len() as u8,
+                long: None,
+            }
+        } else {
+            Self {
+                inline: [0u8; INLINE_CAP],
+                len: u8::MAX,
+                long: Some(text.into()),
+            }
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        match &self.long {
+            Some(s) => s,
+            None => std::str::from_utf8(&self.inline[..usize::from(self.len)])
+                .expect("cell text is valid UTF-8"),
+        }
+    }
+}
+
+impl PartialEq for CellText {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
 /// A cell as it was last written to the outer terminal.
 #[derive(Clone, Default, PartialEq, Eq)]
 struct PaintedCell {
-    text: Box<str>,
+    text: CellText,
     /// 0 marks the second column of a wide glyph, which has no cell of its own.
     width: u16,
     sgr: Sgr,
@@ -298,7 +348,7 @@ pub fn draw<'a>(
             // rewriting them makes outer Ghostty redraw the whole row.
             let cached = &cache[usize::from(x)];
             let changed = row_full
-                || cached.text.as_ref() != text
+                || cached.text.as_str() != text
                 || cached.width != width
                 || cached.sgr != sgr
                 || cached.uri.as_deref() != uri.as_deref();
@@ -317,7 +367,7 @@ pub fn draw<'a>(
                 cur_col = Some(area.x + x + width);
 
                 let painted = PaintedCell {
-                    text: text.clone().into_boxed_str(),
+                    text: CellText::new(&text),
                     width,
                     sgr,
                     uri: uri.map(Into::into),
@@ -677,6 +727,21 @@ mod tests {
             .unwrap();
         let selection = Selection::new(start, end, false);
         term.set_selection(Some(&selection)).unwrap();
+    }
+
+    #[test]
+    fn cell_text_round_trips_inline_and_heap() {
+        let inline = "A字";
+        assert_eq!(CellText::new(inline).as_str(), inline);
+        // Empty default and equality across representations.
+        assert_eq!(CellText::default().as_str(), "");
+        assert_eq!(CellText::new(inline), CellText::new(inline));
+        // Long sequences spill to the heap and still compare by content.
+        let long = "x".repeat(INLINE_CAP + 1);
+        let stored = CellText::new(&long);
+        assert!(stored.long.is_some());
+        assert_eq!(stored.as_str(), long);
+        assert_ne!(stored, CellText::new(&"y".repeat(INLINE_CAP + 1)));
     }
 
     #[test]
