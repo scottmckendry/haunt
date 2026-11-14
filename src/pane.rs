@@ -805,6 +805,11 @@ impl Pane {
         process_cwd(pgid)
     }
 
+    /// The child's process id, if it is still owned.
+    pub fn pid(&self) -> Option<u32> {
+        self.child.pid()
+    }
+
     /// Wait for the child to exit and return its status.
     pub fn wait(&mut self) -> Result<i32> {
         Ok(self.child.wait()?.exit_code() as i32)

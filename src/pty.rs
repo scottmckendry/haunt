@@ -13,9 +13,22 @@ pub struct ChildGuard(Option<Box<dyn Child + Send + Sync>>);
 
 impl ChildGuard {
     pub fn wait(&mut self) -> io::Result<ExitStatus> {
-        let status = self.0.as_mut().expect("child already reaped").wait()?;
-        self.0 = None;
-        Ok(status)
+        match self.0.as_mut() {
+            Some(child) => {
+                let status = child.wait()?;
+                self.0 = None;
+                Ok(status)
+            }
+            // The shutdown reaper already reaped the child while an exit
+            // notification raced it. Report a generic failure; the real
+            // status is unrecoverable but the caller cannot block here.
+            None => Ok(ExitStatus::with_exit_code(1)),
+        }
+    }
+
+    /// The child's process id, if it is still owned.
+    pub fn pid(&self) -> Option<u32> {
+        self.0.as_ref().and_then(|child| child.process_id())
     }
 
     /// Queue the child for shutdown without blocking the caller.

@@ -120,6 +120,7 @@ impl App {
         let graphics = Graphics::new()?;
         let (main, reader) =
             Pane::spawn(0, &cfg.shell, None, dims_of(size, full_area(size)), theme)?;
+        watch_child(0, main.pid(), tx.clone());
         spawn_reader(0, reader, tx.clone());
         let aux = (0..cfg.apps.len()).map(|_| None).collect();
         // Only the main process writes a banner: app panes never get a ghost, and
@@ -536,6 +537,11 @@ impl App {
         }
 
         if self.main.id == id {
+            // Both the PTY reader and the child watcher report this, so it
+            // can arrive twice (or after a shutdown has started).
+            if !self.running {
+                return Ok(());
+            }
             self.exit_code = self.main.wait()?;
             self.running = false;
             return Ok(());
@@ -610,6 +616,7 @@ impl App {
             match Pane::spawn(id, &cmd, cwd.as_deref(), dims, self.theme) {
                 Ok((pane, reader)) => {
                     self.next_id += 1;
+                    watch_child(id, pane.pid(), self.tx.clone());
                     self.aux[idx] = Some(pane);
                     spawn_reader(id, reader, self.tx.clone());
                 }
@@ -1129,6 +1136,35 @@ impl App {
     }
 }
 
+fn watch_child(pane_id: u64, pid: Option<u32>, tx: SyncSender<Msg>) {
+    let Some(pid) = pid else {
+        // Child already gone; the reader's EOF will report it.
+        return;
+    };
+    thread::spawn(move || {
+        // Blocking waitid with WNOWAIT detects the direct child's death
+        // without reaping it, so `Pane::wait` can still collect the status
+        // afterwards. Descendants that keep the slave PTY open (daemons,
+        // `nohup` jobs) would otherwise hold the master reader alive forever
+        // and the pane would never be torn down.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let rc = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        // ECHILD means someone already reaped it (the shutdown reaper),
+        // which is still an exit. Other errors leave the reader's EOF as
+        // the fallback signal.
+        if rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD) {
+            let _ = tx.send(Msg::PaneEof(pane_id));
+        }
+    });
+}
+
 fn spawn_reader(id: u64, mut reader: Box<dyn Read + Send>, tx: SyncSender<Msg>) {
     thread::spawn(move || {
         let mut buf = [0u8; 16 * 1024];
@@ -1359,6 +1395,38 @@ const SYNC_THRESHOLD: usize = 4096;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn child_watcher_fires_when_descendants_hold_the_pty_open() {
+        use std::sync::mpsc;
+
+        let mut pty = crate::pty::spawn(
+            "sh",
+            &["-c".to_string(), "sleep 30 & exit".to_string()],
+            None,
+            24,
+            80,
+            0,
+            0,
+        )
+        .unwrap();
+        // The backgrounded `sleep` keeps the slave PTY open after `sh`
+        // exits, so the master reader would never see EOF.
+        let (tx, rx) = mpsc::sync_channel(8);
+        watch_child(7, pty.child.pid(), tx);
+        let msg = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("watcher did not report child exit");
+        assert!(
+            matches!(msg, Msg::PaneEof(7)),
+            "unexpected message from watcher"
+        );
+        // Reap and clean up the lingering session.
+        let _ = pty.child.wait();
+        pty.child.shutdown();
+        crate::pty::flush_shutdowns();
+    }
 
     #[test]
     fn reload_maps_by_name_and_rejects_removing_running_apps() {
