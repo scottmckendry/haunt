@@ -125,8 +125,19 @@ fn run() -> Result<i32> {
         });
     }
 
+    // Pace timed work (notification/autoscroll animation) from a fixed
+    // deadline rather than sleeping TICK after each iteration, so per-frame
+    // handling and render time doesn't stretch the animation interval.
+    // Rendering itself stays uncapped: while messages keep arriving,
+    // recv_timeout returns immediately and the loop never throttles.
+    let mut next_tick = std::time::Instant::now() + app::TICK;
     while app.running() {
-        match rx.recv_timeout(app::TICK) {
+        let now = std::time::Instant::now();
+        if next_tick <= now {
+            // Don't accumulate catch-up sleeps after a busy burst.
+            next_tick = now + app::TICK;
+        }
+        match rx.recv_timeout(next_tick - now) {
             Ok(msg) => app.handle(msg)?,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
