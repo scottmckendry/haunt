@@ -18,7 +18,12 @@ mod pty;
 mod shell;
 mod theme;
 
-use std::{io::Write, process::ExitCode, sync::mpsc::RecvTimeoutError, thread};
+use std::{
+    io::{BufWriter, Write},
+    process::ExitCode,
+    sync::mpsc::RecvTimeoutError,
+    thread,
+};
 
 use anyhow::Result;
 use crossterm::{
@@ -59,7 +64,10 @@ fn run() -> Result<i32> {
     terminal::enable_raw_mode()?;
     let _guard = Guard;
 
-    let mut stdout = std::io::stdout();
+    // Render frames through a large buffer: the default stdout handle is a
+    // 1024-byte LineWriter, which splits a full frame into a write syscall per
+    // KiB. A single buffered write keeps the render path to one syscall.
+    let mut stdout = BufWriter::with_capacity(64 * 1024, std::io::stdout().lock());
     execute!(
         stdout,
         EnterAlternateScreen,
