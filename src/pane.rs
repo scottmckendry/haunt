@@ -859,8 +859,27 @@ fn forward_clipboard(effects: &Arc<Mutex<Vec<u8>>>, write: &ClipboardWrite<'_>) 
 
 #[cfg(target_os = "linux")]
 fn process_cwd(pid: libc::pid_t) -> Option<PathBuf> {
+    let start = proc_starttime(pid);
     let path = std::fs::read_link(format!("/proc/{pid}/cwd")).ok()?;
+    // The foreground process may have exited and been reaped between
+    // `tcgetpgrp()` and this read, with its PID recycled to an unrelated
+    // process. A changed or missing start time means /proc/{pid} no longer
+    // describes the process we asked about, so the cwd is not ours.
+    if start.is_none() || proc_starttime(pid) != start {
+        return None;
+    }
     path.is_dir().then_some(path)
+}
+
+/// Field 22 (`starttime`) of /proc/{pid}/stat, in clock ticks since boot.
+/// Serves as a process identity check against PID recycling.
+#[cfg(target_os = "linux")]
+fn proc_starttime(pid: libc::pid_t) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // `comm` (field 2) may contain spaces and parentheses; everything after
+    // the final `)` is field 3 (state) onwards.
+    let after_comm = stat.rsplit_once(") ")?.1;
+    after_comm.split_whitespace().nth(19)?.parse().ok()
 }
 
 #[cfg(target_os = "macos")]
@@ -911,6 +930,26 @@ fn process_cwd(pid: libc::pid_t) -> Option<PathBuf> {
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn process_cwd(_pid: libc::pid_t) -> Option<PathBuf> {
     None
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn proc_starttime_parses_own_stat() {
+    // Our own /proc/self/stat must yield a plausible nonzero start time.
+    let ticks = proc_starttime(std::process::id() as libc::pid_t).expect("self stat");
+    assert!(ticks > 0);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn proc_starttime_rejects_reaped_process() {
+    use std::process::Command;
+    let mut child = Command::new("sleep").args(["30"]).spawn().unwrap();
+    let pid = child.id() as libc::pid_t;
+    assert!(proc_starttime(pid).is_some());
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(proc_starttime(pid), None);
 }
 
 fn mouse_button(button: MouseButton) -> mouse::Button {
