@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.2](https://github.com/scottmckendry/haunt/compare/haunt-v0.4.1...haunt-v0.4.2) (2026-11-14)
+
+
+### Bug Fixes
+
+* cwd lookup edgecase ([736beb5](https://github.com/scottmckendry/haunt/commit/736beb529a6384b3be97a28d086eb5dcc7af586c))
+* improve frame timing ([5b8921d](https://github.com/scottmckendry/haunt/commit/5b8921d9a2b59603913b5ce8463782b393768cc5))
+* watch child exit instead of relying on pty eof ([64f8db5](https://github.com/scottmckendry/haunt/commit/64f8db5bd4bd984a3f64d043201effa30a72409a))
+
+
+### Performance Improvements
+
+* avoid heap allocations in render loop ([9f5750a](https://github.com/scottmckendry/haunt/commit/9f5750abe5c99fbbb2ffaba7866181072f8610a9))
+* reduce syscalls per frame ([07631a6](https://github.com/scottmckendry/haunt/commit/07631a68e523d545a8f4db65ae65dba0ad9829e9))
+
 ## [0.4.1](https://github.com/scottmckendry/haunt/compare/haunt-v0.4.0...haunt-v0.4.1) (2026-11-13)
 
 
