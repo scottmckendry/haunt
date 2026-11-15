@@ -360,9 +360,13 @@ mod tests {
             .iter()
             .map(|(label, _)| *label)
             .collect();
-        // The terminal line is absent when the terminal does not name itself,
-        // as on a CI runner with no `TERM_PROGRAM`.
-        let mut expected = vec!["host", "system", "kernel", "uptime", "shell"];
+        // The system line is absent when /etc/os-release is not available,
+        // as in the Nix build sandbox.
+        let mut expected = vec!["host"];
+        if machine::system().is_some() {
+            expected.push("system");
+        }
+        expected.extend(["kernel", "uptime", "shell"]);
         if machine::terminal().is_some() {
             expected.push("terminal");
         }
