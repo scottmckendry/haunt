@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.4.3](https://github.com/scottmckendry/haunt/compare/haunt-v0.4.2...haunt-v0.4.3) (2026-11-15)
+
+
+### Bug Fixes
+
+* **banner:** hide system when etc/os-release is missing ([07916fd](https://github.com/scottmckendry/haunt/commit/07916fd8c45347e8d10872738d0b85d09d453a93))
+* drop ghostty flake, update deps ([a8270b4](https://github.com/scottmckendry/haunt/commit/a8270b43444fc916480cc719b6b15fdc72939642))
+* **pty:** 'zombie-reaping race' ([698a61e](https://github.com/scottmckendry/haunt/commit/698a61ec575bef6672f1fd9612f453ef60e2c958))
+
 ## [0.4.2](https://github.com/scottmckendry/haunt/compare/haunt-v0.4.1...haunt-v0.4.2) (2026-11-14)
 
 
