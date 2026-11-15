@@ -3,6 +3,7 @@ use std::{
     io::{self, Read, Write},
     path::Path,
     sync::{OnceLock, mpsc},
+    time::{Duration, Instant},
 };
 
 use anyhow::Result;
@@ -58,7 +59,22 @@ enum ReapJob {
     Flush(mpsc::Sender<()>),
 }
 
+/// Make haunt the reaper of orphaned descendants.
+///
+/// When a shell is killed it cannot reap its children, so the rest of its
+/// process tree is reparented. Without this, they fall to PID 1, which in a
+/// container or minimal environment may never reap them — they linger in
+/// /proc as zombies after being killed. Claiming them lets
+/// [`settle_descendants`] reap them as part of shutdown.
+fn ensure_subreaper() {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0);
+    }
+}
+
 fn reaper() -> &'static mpsc::Sender<ReapJob> {
+    ensure_subreaper();
     static REAPER: OnceLock<mpsc::Sender<ReapJob>> = OnceLock::new();
     REAPER.get_or_init(|| {
         let (tx, rx) = mpsc::channel::<ReapJob>();
@@ -108,6 +124,26 @@ fn terminate(child: &mut dyn Child, sid: Option<libc::pid_t>) {
         let _ = child.kill();
     }
     let _ = child.wait();
+    settle_descendants();
+}
+
+/// Wait for killed descendants to be reaped.
+///
+/// Descendants killed in the final sweep can outlive the direct child by a
+/// few milliseconds and are reparented to haunt (see [`ensure_subreaper`]),
+/// so they are zombies until reaped here. A pane's shutdown is only truly
+/// complete once nothing it started is still on the process table.
+fn settle_descendants() {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        // -1 with WNOHANG: >0 reaped one, 0 means children still dying, and
+        // -1 (ECHILD) means every descendant has been reaped.
+        match unsafe { libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) } {
+            -1 => break,
+            0 => std::thread::sleep(Duration::from_millis(10)),
+            _ => {}
+        }
+    }
 }
 
 /// Signal the child's process group and every other process in its session.
@@ -194,6 +230,8 @@ pub fn spawn(
     pixel_width: u16,
     pixel_height: u16,
 ) -> Result<Pty> {
+    ensure_subreaper();
+
     let pair = native_pty_system().openpty(PtySize {
         rows,
         cols,
