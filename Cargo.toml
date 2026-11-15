@@ -9,7 +9,7 @@ anyhow = "1"
 crossterm = "0.29"
 indexmap = { version = "2", features = ["serde"] }
 libc = "0.2"
-libghostty-vt = { git = "https://github.com/Uzaaft/libghostty-rs", rev = "768add93c54ccdba3f5c4d8763789ab6416f3151", features = [
+libghostty-vt = { git = "https://github.com/Uzaaft/libghostty-rs", rev = "483ea3d5247b214060da58ef6037a95f30ae89fb", features = [
   "pkg-config",
   "png",
 ] }

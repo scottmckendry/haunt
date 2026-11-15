@@ -11,10 +11,11 @@ use std::collections::{HashMap, HashSet};
 use anyhow::Result;
 use libghostty_vt::{
     Error, Terminal,
+    color::Rgb,
+    point::{Coordinate, Point},
     render::{CellIterator, CursorVisualStyle, RowId, RowIterator, Snapshot},
     screen::{CellWide, cell},
-    style::{RgbColor, Style, StyleColor, Underline},
-    terminal::{Point, PointCoordinate},
+    style::{Style, StyleColor, Underline},
     unicode,
 };
 
@@ -105,8 +106,8 @@ enum Scroll {
 /// Painting options that are not part of a snapshot.
 #[derive(Default)]
 pub struct PaintState {
-    pub selection_fg: Option<RgbColor>,
-    pub selection_bg: Option<RgbColor>,
+    pub selection_fg: Option<Rgb>,
+    pub selection_bg: Option<Rgb>,
     /// Painted cells keyed by row identity. A row keeps its id while it moves,
     /// so a scroll can reuse the cache instead of rebuilding every row.
     rows: HashMap<RowId, Vec<PaintedCell>>,
@@ -402,7 +403,7 @@ pub fn draw<'a>(
 }
 
 fn hyperlink_uri(term: &Terminal<'_, '_>, x: u16, y: u32) -> Result<Option<String>> {
-    let grid = term.grid_ref(Point::Viewport(PointCoordinate { x, y }))?;
+    let grid = term.grid_ref(Point::Viewport(Coordinate { x, y }))?;
     let mut buf = [0u8; 512];
     let bytes = match grid.hyperlink_uri(&mut buf) {
         Ok(0) => return Ok(None),
@@ -438,8 +439,8 @@ fn placeholder_outer_id(graphics: &Graphics, pane_id: u64, style: &Style) -> Opt
 }
 
 /// Encode an image ID as the RGB foreground colour a placeholder cell expects.
-fn image_id_color(id: u32) -> RgbColor {
-    RgbColor {
+fn image_id_color(id: u32) -> Rgb {
+    Rgb {
         r: (id >> 16) as u8,
         g: (id >> 8) as u8,
         b: id as u8,
@@ -500,16 +501,16 @@ struct Sgr {
     invisible: bool,
     strikethrough: bool,
     overline: bool,
-    fg: Option<RgbColor>,
-    bg: Option<RgbColor>,
-    ul: Option<RgbColor>,
+    fg: Option<Rgb>,
+    bg: Option<Rgb>,
+    ul: Option<Rgb>,
 }
 
 fn sgr_for(
     state: &PaintState,
     style: &Style,
-    fg: Option<RgbColor>,
-    bg: Option<RgbColor>,
+    fg: Option<Rgb>,
+    bg: Option<Rgb>,
     selected: bool,
 ) -> Sgr {
     let underline = match style.underline {
@@ -609,7 +610,7 @@ fn emit_sgr(out: &mut Vec<u8>, sgr: &Sgr) {
     out.push(b'm');
 }
 
-fn push_color(out: &mut Vec<u8>, c: RgbColor) {
+fn push_color(out: &mut Vec<u8>, c: Rgb) {
     push_dec(out, u32::from(c.r));
     out.push(b';');
     push_dec(out, u32::from(c.g));
@@ -648,9 +649,9 @@ mod tests {
     use super::*;
     use libghostty_vt::{
         RenderState, Terminal,
+        point::{Coordinate, Point},
         render::{CellIterator, RowIterator},
         selection::Selection,
-        terminal::{Point, PointCoordinate},
     };
 
     fn area(cols: u16, rows: u16) -> Area {
@@ -720,10 +721,10 @@ mod tests {
 
     fn select(term: &Terminal<'static, 'static>, start: u16, end: u16) {
         let start = term
-            .grid_ref(Point::Viewport(PointCoordinate { x: start, y: 0 }))
+            .grid_ref(Point::Viewport(Coordinate { x: start, y: 0 }))
             .unwrap();
         let end = term
-            .grid_ref(Point::Viewport(PointCoordinate { x: end, y: 0 }))
+            .grid_ref(Point::Viewport(Coordinate { x: end, y: 0 }))
             .unwrap();
         let selection = Selection::new(start, end, false);
         term.set_selection(Some(&selection)).unwrap();
@@ -956,7 +957,7 @@ mod tests {
 
         let mut state = PaintState {
             selection_fg: None,
-            selection_bg: Some(RgbColor {
+            selection_bg: Some(Rgb {
                 r: 0x3c,
                 g: 0x40,
                 b: 0x48,

@@ -1,21 +1,12 @@
 {
   description = "haunt — a small terminal multiplexer for Ghostty";
 
-  inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-
-    # Must match GHOSTTY_COMMIT in libghostty-vt-sys's build.rs.
-    ghostty = {
-      url = "github:ghostty-org/ghostty/0fa3d577a5614150ff8e2c152de5fb9d5c6d2dec";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-  };
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
   outputs =
     {
       self,
       nixpkgs,
-      ghostty,
     }:
     let
       systems = [
@@ -24,27 +15,28 @@
         "aarch64-darwin"
       ];
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+      version = (fromTOML (builtins.readFile ./Cargo.toml)).package.version;
     in
     {
       packages = forAll (
         pkgs:
         let
-          ghosttyLib = ghostty.packages.${pkgs.stdenv.hostPlatform.system}.libghostty-vt;
+          libghostty-vt = pkgs.callPackage ./nix/libghostty-vt.nix { };
         in
         {
           default = pkgs.rustPlatform.buildRustPackage {
             pname = "haunt";
-            version = "0.1.0";
+            inherit version;
             src = ./.;
             cargoLock = {
               lockFile = ./Cargo.lock;
-              outputHashes."libghostty-vt-0.2.1" = "sha256-7KbO3Be+DWUvQnSLEksGVzNOKVieBhBqR4hbkoQtK6c=";
+              outputHashes."libghostty-vt-0.2.1" = "sha256-e5YkGJxvKF6kNaFlRC9M1VCftcKrk3YgnirkW/EXlCQ=";
             };
 
             nativeBuildInputs = [ pkgs.pkg-config ];
-            buildInputs = [ ghosttyLib ];
+            buildInputs = [ libghostty-vt ];
 
-            env.PKG_CONFIG_PATH = "${ghosttyLib.dev}/share/pkgconfig";
+            env.PKG_CONFIG_PATH = "${libghostty-vt.dev}/lib/pkgconfig";
 
             meta = {
               description = "A small terminal multiplexer for Ghostty";
@@ -58,7 +50,7 @@
       devShells = forAll (
         pkgs:
         let
-          ghosttyLib = ghostty.packages.${pkgs.stdenv.hostPlatform.system}.libghostty-vt;
+          libghostty-vt = pkgs.callPackage ./nix/libghostty-vt.nix { };
         in
         {
           default = pkgs.mkShell {
@@ -71,10 +63,10 @@
               zig
               pkg-config
               git
-              ghosttyLib
+              libghostty-vt
             ];
 
-            PKG_CONFIG_PATH = "${ghosttyLib.dev}/share/pkgconfig";
+            PKG_CONFIG_PATH = "${libghostty-vt.dev}/lib/pkgconfig";
             RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
           };
         }

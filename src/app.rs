@@ -14,7 +14,7 @@ use crossterm::{
     event::{Event, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind},
     terminal,
 };
-use libghostty_vt::{key, terminal::Mode};
+use libghostty_vt::{key, mode::Mode};
 
 use crate::{
     banner, base64,

@@ -11,17 +11,21 @@ use anyhow::Result;
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use libghostty_vt::{
     RenderState, Terminal,
-    fmt::Formatter,
-    mouse,
-    render::{CellIterator, RowIterator},
-    screen::{Screen, TrackedGridRef},
-    selection::{SelectLineOptions, SelectWordBetweenOptions, Selection},
-    terminal::{
-        ClipboardLocation, ClipboardWrite, ColorScheme, ConformanceLevel, DeviceAttributeFeature,
-        DeviceAttributes, DeviceType, Mode, Point, PointCoordinate, PrimaryDeviceAttributes,
-        ProgressState as VtProgressState, ScrollViewport, SecondaryDeviceAttributes,
-        SizeReportSize,
+    effect::{
+        ClipboardLocation, ClipboardWrite, ConformanceLevel, DeviceAttributeFeature,
+        DeviceAttributes, DeviceType, PrimaryDeviceAttributes, ProgressState as VtProgressState,
+        SecondaryDeviceAttributes,
     },
+    fmt::Formatter,
+    grid_ref::TrackedGridRef,
+    mode::Mode,
+    mouse,
+    point::{Coordinate, Point},
+    render::{CellIterator, RowIterator},
+    report::{ColorScheme, SizeReportSize},
+    screen::Screen,
+    selection::{SelectLineOptions, SelectWordBetweenOptions, Selection},
+    terminal::ScrollViewport,
 };
 use portable_pty::{MasterPty, PtySize};
 
@@ -651,7 +655,7 @@ impl Pane {
 
     /// Start a local selection at viewport cell `(x, y)`.
     pub fn selection_start(&mut self, x: u16, y: u16, kind: SelectKind) -> Result<()> {
-        let point = Point::Viewport(PointCoordinate { x, y: y as u32 });
+        let point = Point::Viewport(Coordinate { x, y: y as u32 });
         let anchor = self.term.track_grid_ref(point)?;
         let focus = self.term.track_grid_ref(point)?;
         self.selection = Some(SelectionState {
@@ -674,7 +678,7 @@ impl Pane {
         if let Some(selection) = self.selection.as_mut() {
             selection.pointer = (x, y);
             selection.dragging = true;
-            let point = Point::Viewport(PointCoordinate { x, y: y as u32 });
+            let point = Point::Viewport(Coordinate { x, y: y as u32 });
             selection.focus.set(&mut self.term, point)?;
         }
         self.sync_selection()?;
@@ -743,7 +747,7 @@ impl Pane {
         }
 
         if let Some(selection) = self.selection.as_mut() {
-            let point = Point::Viewport(PointCoordinate { x, y: edge as u32 });
+            let point = Point::Viewport(Coordinate { x, y: edge as u32 });
             selection.focus.set(&mut self.term, point)?;
         }
         self.sync_selection()?;
@@ -1331,7 +1335,7 @@ mod tests {
 
     #[test]
     fn applying_a_theme_updates_defaults_and_selection_colours() {
-        use libghostty_vt::style::RgbColor;
+        use libghostty_vt::color::Rgb;
 
         let (mut pane, _reader) = Pane::spawn(
             2,
@@ -1350,17 +1354,17 @@ mod tests {
         pane.writer = Arc::new(Mutex::new(Box::new(SharedWriter(Arc::clone(&written)))));
 
         let theme = Theme {
-            bg: Some(RgbColor {
+            bg: Some(Rgb {
                 r: 0x12,
                 g: 0x34,
                 b: 0x56,
             }),
-            selection_fg: Some(RgbColor {
+            selection_fg: Some(Rgb {
                 r: 0xff,
                 g: 0xff,
                 b: 0xff,
             }),
-            selection_bg: Some(RgbColor {
+            selection_bg: Some(Rgb {
                 r: 0x65,
                 g: 0x43,
                 b: 0x21,

@@ -19,17 +19,17 @@ use std::{
 use anyhow::Result;
 use libghostty_vt::{
     Terminal,
-    style::{Palette, RgbColor},
-    terminal::ColorScheme,
+    color::{Palette, Rgb},
+    report::ColorScheme,
 };
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Theme {
-    pub fg: Option<RgbColor>,
-    pub bg: Option<RgbColor>,
-    pub cursor: Option<RgbColor>,
-    pub selection_fg: Option<RgbColor>,
-    pub selection_bg: Option<RgbColor>,
+    pub fg: Option<Rgb>,
+    pub bg: Option<Rgb>,
+    pub cursor: Option<Rgb>,
+    pub selection_fg: Option<Rgb>,
+    pub selection_bg: Option<Rgb>,
     pub palette: Palette,
 }
 
@@ -74,11 +74,11 @@ impl Theme {
             };
             let value = value.trim();
             match key.trim() {
-                "foreground" => theme.fg = RgbColor::parse(value).ok(),
-                "background" => theme.bg = RgbColor::parse(value).ok(),
-                "cursor-color" => theme.cursor = RgbColor::parse(value).ok(),
-                "selection-foreground" => theme.selection_fg = RgbColor::parse(value).ok(),
-                "selection-background" => theme.selection_bg = RgbColor::parse(value).ok(),
+                "foreground" => theme.fg = Rgb::parse(value).ok(),
+                "background" => theme.bg = Rgb::parse(value).ok(),
+                "cursor-color" => theme.cursor = Rgb::parse(value).ok(),
+                "selection-foreground" => theme.selection_fg = Rgb::parse(value).ok(),
+                "selection-background" => theme.selection_bg = Rgb::parse(value).ok(),
                 "palette" => {
                     if let Ok((index, rgb)) = Palette::parse_palette_entry(value) {
                         theme.palette.set(index, rgb);
@@ -135,7 +135,7 @@ pub fn under_ghostty() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libghostty_vt::style::PaletteIndex;
+    use libghostty_vt::color::PaletteIndex;
 
     #[test]
     fn parses_resolved_config() {
@@ -155,7 +155,7 @@ palette = 15=#ffffff
 
         assert_eq!(
             theme.fg,
-            Some(RgbColor {
+            Some(Rgb {
                 r: 0xff,
                 g: 0xff,
                 b: 0xff
@@ -163,7 +163,7 @@ palette = 15=#ffffff
         );
         assert_eq!(
             theme.selection_bg,
-            Some(RgbColor {
+            Some(Rgb {
                 r: 0x3c,
                 g: 0x40,
                 b: 0x48
@@ -171,7 +171,7 @@ palette = 15=#ffffff
         );
         assert_eq!(
             theme.selection_fg,
-            Some(RgbColor {
+            Some(Rgb {
                 r: 0xff,
                 g: 0xff,
                 b: 0xff
@@ -179,7 +179,7 @@ palette = 15=#ffffff
         );
         assert_eq!(
             theme.bg,
-            Some(RgbColor {
+            Some(Rgb {
                 r: 0x16,
                 g: 0x18,
                 b: 0x1a
@@ -187,7 +187,7 @@ palette = 15=#ffffff
         );
         assert_eq!(
             theme.cursor,
-            Some(RgbColor {
+            Some(Rgb {
                 r: 0xab,
                 g: 0xcd,
                 b: 0xef
@@ -195,7 +195,7 @@ palette = 15=#ffffff
         );
         assert_eq!(
             theme.palette.get(PaletteIndex::RED),
-            RgbColor {
+            Rgb {
                 r: 0xe8,
                 g: 0x79,
                 b: 0x6f
@@ -239,7 +239,7 @@ palette = 15=#ffffff
     #[test]
     fn classifies_light_and_dark_backgrounds() {
         let dark = Theme {
-            bg: Some(RgbColor {
+            bg: Some(Rgb {
                 r: 0x16,
                 g: 0x18,
                 b: 0x1a,
@@ -249,7 +249,7 @@ palette = 15=#ffffff
         assert_eq!(dark.scheme(), Some(ColorScheme::Dark));
 
         let light = Theme {
-            bg: Some(RgbColor {
+            bg: Some(Rgb {
                 r: 0xfa,
                 g: 0xfa,
                 b: 0xfa,

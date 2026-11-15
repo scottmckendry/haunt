@@ -6,7 +6,7 @@
 use std::io::Write as _;
 use std::path::Path;
 
-use libghostty_vt::{style::PaletteIndex, unicode};
+use libghostty_vt::{color::PaletteIndex, unicode};
 
 use crate::{app::Size, base64, config::Config, machine, theme::Theme};
 /// The ghost, embedded so the binary carries its own copy.
@@ -429,12 +429,12 @@ mod tests {
 
     #[test]
     fn secondary_ink_mixes_a_little_foreground_into_bright_black() {
-        use libghostty_vt::style::{Palette, RgbColor};
+        use libghostty_vt::color::{Palette, Rgb};
 
         let mut palette = Palette::default();
-        palette.set(PaletteIndex::BRIGHT_BLACK, RgbColor { r: 0, g: 0, b: 0 });
+        palette.set(PaletteIndex::BRIGHT_BLACK, Rgb { r: 0, g: 0, b: 0 });
         let theme = Theme {
-            fg: Some(RgbColor {
+            fg: Some(Rgb {
                 r: 255,
                 g: 255,
                 b: 255,
