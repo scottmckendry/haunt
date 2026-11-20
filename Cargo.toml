@@ -15,8 +15,8 @@ libghostty-vt = { git = "https://github.com/Uzaaft/libghostty-rs", rev = "483ea3
 ] }
 portable-pty = "0.9"
 serde = { version = "1", features = ["derive"] }
-signal-hook = "0.3"
-toml = { version = "0.9", features = ["preserve_order"] }
+signal-hook = "0.4"
+toml = { version = "1", features = ["preserve_order"] }
 
 [profile.dist]
 inherits = "release"

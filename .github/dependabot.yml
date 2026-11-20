@@ -1,0 +1,31 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      rust-crates:
+        patterns:
+          - '*'
+    ignore:
+      # Update alongside the matching Ghostty source and Zig package pins.
+      - dependency-name: libghostty-vt
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - '*'
+
+  - package-ecosystem: nix
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      nix-flake-inputs:
+        patterns:
+          - '*'
