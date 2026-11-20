@@ -3,7 +3,6 @@
 
 use std::{
     io::{ErrorKind, Read, Write},
-    path::{Path, PathBuf},
     sync::mpsc::{SyncSender, sync_channel},
     thread,
     time::{Duration, Instant},
@@ -106,9 +105,7 @@ pub struct App {
     pending_writes: Vec<u8>,
     frame_buf: Vec<u8>,
     last_title: Option<String>,
-    last_cwd: Option<PathBuf>,
     last_progress: Option<Progress>,
-    hostname: String,
     /// Whether the launch banner still has to be written to the main pane.
     banner_pending: bool,
     /// Whether the main pane holds the banner's ghost.
@@ -155,9 +152,7 @@ impl App {
             pending_writes: Vec::new(),
             frame_buf: Vec::with_capacity(32 * 1024),
             last_title: None,
-            last_cwd: None,
             last_progress: None,
-            hostname: crate::machine::hostname(),
             banner_pending,
             ghost: false,
         })
@@ -214,7 +209,6 @@ impl App {
         }
         self.sync_progress(progress_changed)?;
         self.sync_title();
-        self.sync_cwd();
         Ok(())
     }
 
@@ -1090,20 +1084,6 @@ impl App {
         self.last_title = title;
     }
 
-    /// Report the focused pane's working directory to the outer terminal.
-    /// Ghostty tracks this from OSC 7 and uses it to give new tabs and splits
-    /// the same cwd as the surface they were opened from.
-    fn sync_cwd(&mut self) {
-        let cwd = self.focused().cwd();
-        if cwd == self.last_cwd {
-            return;
-        }
-        self.last_cwd = cwd.clone();
-        let Some(cwd) = cwd else { return };
-        self.pending_writes
-            .extend_from_slice(&osc7_sequence(&self.hostname, &cwd));
-    }
-
     pub(crate) fn set_error(&mut self, error: String) {
         self.push_notification(NotificationKind::Error(error));
     }
@@ -1182,24 +1162,6 @@ fn spawn_reader(id: u64, mut reader: Box<dyn Read + Send>, tx: SyncSender<Msg>) 
         }
         let _ = tx.send(Msg::PaneEof(id));
     });
-}
-
-/// Build the OSC 7 sequence Ghostty accepts for cwd inheritance. The
-/// `kitty-shell-cwd` scheme carries a raw, unencoded path so spaces and `%`
-/// survive intact; control bytes are dropped so a path cannot terminate or
-/// corrupt the sequence.
-fn osc7_sequence(hostname: &str, cwd: &Path) -> Vec<u8> {
-    let path: String = cwd
-        .to_string_lossy()
-        .chars()
-        .filter(|c| !c.is_control())
-        .collect();
-    let mut out = Vec::with_capacity(hostname.len() + path.len() + 21);
-    out.extend_from_slice(b"\x1b]7;kitty-shell-cwd://");
-    out.extend_from_slice(hostname.as_bytes());
-    out.extend_from_slice(path.as_bytes());
-    out.push(0x07);
-    out
 }
 
 fn contains(area: Area, x: u16, y: u16) -> bool {
@@ -1520,18 +1482,6 @@ mod tests {
         assert!(contains(area, 79, 23));
         assert!(!contains(area, 80, 23));
         assert!(!contains(area, 79, 24));
-    }
-
-    #[test]
-    fn osc7_carries_a_raw_path() {
-        assert_eq!(
-            osc7_sequence("host", Path::new("/tmp/a b/100%")),
-            b"\x1b]7;kitty-shell-cwd://host/tmp/a b/100%\x07"
-        );
-        assert_eq!(
-            osc7_sequence("host", Path::new("/tmp/a\nb")),
-            b"\x1b]7;kitty-shell-cwd://host/tmp/ab\x07"
-        );
     }
 
     #[test]
