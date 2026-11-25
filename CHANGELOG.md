@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.4](https://github.com/scottmckendry/haunt/compare/haunt-v0.4.3...haunt-v0.4.4) (2026-11-25)
+
+
+### Bug Fixes
+
+* don't forward osc 7 sequence to ghostty ([49c1538](https://github.com/scottmckendry/haunt/commit/49c1538b1950bb1b38d59fa1a4bb07c63ed490a7))
+* improve clipboard/select behaviour ([f66e17c](https://github.com/scottmckendry/haunt/commit/f66e17c089c58ee59b247c9791b9ff74de551727))
+
 ## [0.4.3](https://github.com/scottmckendry/haunt/compare/haunt-v0.4.2...haunt-v0.4.3) (2026-11-15)
 
 
