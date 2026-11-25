@@ -53,6 +53,20 @@ pub struct Config {
 }
 
 impl Config {
+    /// The default search chord yields to existing user bindings.
+    pub fn search_bind(&self) -> Option<Chord> {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        let bind = Chord {
+            key: KeyCode::Char('f'),
+            mods: KeyModifiers::CONTROL | KeyModifiers::ALT,
+        };
+        (self.reload_bind != bind
+            && self.help_bind != Some(bind)
+            && !self.apps.iter().any(|app| app.chord == bind))
+        .then_some(bind)
+    }
+
     pub fn load() -> Result<Self> {
         let Some(path) = config_path() else {
             return Self::parse("");

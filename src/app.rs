@@ -10,7 +10,10 @@ use std::{
 
 use anyhow::Result;
 use crossterm::{
-    event::{Event, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind},
+    event::{
+        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+        MouseEventKind,
+    },
     terminal,
 };
 use libghostty_vt::{key, mode::Mode};
@@ -75,6 +78,21 @@ struct ClickState {
     count: u8,
 }
 
+#[derive(Default)]
+struct FindPrompt {
+    query: String,
+    result: Option<(usize, usize)>,
+}
+
+impl FindPrompt {
+    fn append(&mut self, text: impl Iterator<Item = char>) {
+        self.query.extend(
+            text.filter(|c| !c.is_control())
+                .take(256 - self.query.chars().count()),
+        );
+    }
+}
+
 pub struct App {
     cfg: Config,
     theme: Option<Theme>,
@@ -104,6 +122,7 @@ pub struct App {
     last_autoscroll: Instant,
     pending_writes: Vec<u8>,
     frame_buf: Vec<u8>,
+    find_prompt: Option<FindPrompt>,
     last_title: Option<String>,
     last_progress: Option<Progress>,
     /// Whether the launch banner still has to be written to the main pane.
@@ -151,6 +170,7 @@ impl App {
             last_autoscroll: Instant::now(),
             pending_writes: Vec::new(),
             frame_buf: Vec::with_capacity(32 * 1024),
+            find_prompt: None,
             last_title: None,
             last_progress: None,
             banner_pending,
@@ -335,9 +355,17 @@ impl App {
             }
         }
 
+        let mut overlay = full_area(self.size);
+        if let Some(prompt) = &self.find_prompt {
+            let height =
+                notification::paint_search(&mut frame, overlay, &prompt.query, prompt.result)
+                    as u16;
+            overlay.y += height;
+            overlay.h -= height;
+        }
         notification::paint_notifications(
             &mut frame,
-            full_area(self.size),
+            overlay,
             &self.notifications,
             &self.cfg,
             Instant::now(),
@@ -400,6 +428,46 @@ impl App {
     }
 
     fn on_key(&mut self, ev: KeyEvent) -> Result<()> {
+        if let Some(mut prompt) = self.find_prompt.take() {
+            if ev.kind != KeyEventKind::Release {
+                match (ev.code, ev.modifiers) {
+                    (KeyCode::Esc, _) => {
+                        self.close_find()?;
+                        return Ok(());
+                    }
+                    (KeyCode::Enter, mods) if mods.is_empty() || mods == KeyModifiers::SHIFT => {
+                        prompt.result = Some(
+                            self.focused_mut()
+                                .find(&prompt.query, mods == KeyModifiers::SHIFT)?,
+                        );
+                    }
+                    (KeyCode::Backspace, KeyModifiers::NONE) => {
+                        prompt.query.pop();
+                        if prompt.result.take().is_some() {
+                            self.focused_mut().clear_find()?;
+                        }
+                    }
+                    (KeyCode::Char(c), mods) if (mods - KeyModifiers::SHIFT).is_empty() => {
+                        prompt.append(std::iter::once(c));
+                        if prompt.result.take().is_some() {
+                            self.focused_mut().clear_find()?;
+                        }
+                    }
+                    _ => {}
+                }
+                self.repaint_overlay_area();
+            }
+            self.find_prompt = Some(prompt);
+            return Ok(());
+        }
+        if ev.kind == KeyEventKind::Press
+            && self.cfg.search_bind().is_some_and(|bind| bind.matches(&ev))
+        {
+            self.clear_selections()?;
+            self.find_prompt = Some(FindPrompt::default());
+            self.repaint_overlay_area();
+            return Ok(());
+        }
         if self.cfg.help_bind.is_some_and(|bind| bind.matches(&ev)) {
             self.push_notification(NotificationKind::Help);
             return Ok(());
@@ -526,6 +594,10 @@ impl App {
     }
 
     fn on_eof(&mut self, id: u64) -> Result<()> {
+        if self.find_prompt.is_some() && id == self.focused_id() {
+            self.find_prompt = None;
+            self.close_find()?;
+        }
         if self.mouse_capture == Some(id) {
             self.mouse_capture = None;
         }
@@ -677,7 +749,24 @@ impl App {
         Ok(())
     }
 
+    fn close_find(&mut self) -> Result<()> {
+        self.focused_mut().clear_find()?;
+        self.repaint_overlay_area();
+        Ok(())
+    }
+
     fn on_mouse(&mut self, ev: MouseEvent) -> Result<()> {
+        if self.find_prompt.is_some() {
+            // Ghostty can report motion while the user is typing the query.
+            // Only a deliberate click or scroll should dismiss the prompt.
+            match ev.kind {
+                MouseEventKind::Down(_) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                    self.find_prompt = None;
+                    self.close_find()?;
+                }
+                _ => return Ok(()),
+            }
+        }
         // The separator owns the pointer for the whole drag, even past the
         // outer edges of the terminal.
         if self.resizing_split {
@@ -982,6 +1071,14 @@ impl App {
     }
 
     fn on_paste(&mut self, text: String) -> Result<()> {
+        if let Some(prompt) = &mut self.find_prompt {
+            prompt.append(text.chars());
+            if prompt.result.take().is_some() {
+                self.focused_mut().clear_find()?;
+            }
+            self.repaint_overlay_area();
+            return Ok(());
+        }
         self.clear_selections()?;
         let bracketed = self.focused().mode(Mode::BRACKETED_PASTE);
         let bytes = paste_bytes(&text, bracketed);

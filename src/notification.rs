@@ -76,8 +76,39 @@ pub(crate) fn paint_notifications(
     }
 }
 
+/// Search uses the notification chrome, but stays open until dismissed.
+pub(crate) fn paint_search(
+    out: &mut Vec<u8>,
+    area: Area,
+    query: &str,
+    result: Option<(usize, usize)>,
+) -> usize {
+    let status = match result {
+        None => "Enter to find".into(),
+        Some((_, 0)) => "No matches".into(),
+        Some((index, total)) => format!("{index}/{total} · Enter / Shift+Enter"),
+    };
+    let lines = [
+        OverlayLine {
+            text: format!("Find · {status}"),
+            leader: Some((4, usize::MAX)),
+        },
+        OverlayLine {
+            text: if query.is_empty() {
+                "Type to search".into()
+            } else {
+                query.into()
+            },
+            leader: query.is_empty().then_some((0, usize::MAX)),
+        },
+    ];
+    out.extend_from_slice(b"\x1b[?25l");
+    paint_overlay_offset(out, area, &lines, "\x1b[39m", "", 0)
+}
+
 struct OverlayLine {
     text: String,
+    // Dim this range of terminal columns, then restore the default foreground.
     leader: Option<(usize, usize)>,
 }
 
@@ -87,6 +118,9 @@ fn help_lines(cfg: &Config) -> Vec<OverlayLine> {
         entries.push((bind.to_string(), "help".to_string()));
     }
     entries.push((cfg.reload_bind.to_string(), "reload".to_string()));
+    if let Some(bind) = cfg.search_bind() {
+        entries.push((bind.to_string(), "search".to_string()));
+    }
     entries.extend(cfg.apps.iter().map(|app| {
         (
             app.chord.to_string(),
@@ -435,7 +469,9 @@ mod tests {
         assert_eq!(lines[0].text.len(), 32);
         assert!(lines[0].text.ends_with(". help"));
         assert!(lines[1].text.ends_with(". reload"));
-        assert!(lines[2].text.contains("test"));
+        assert!(lines[2].text.starts_with("ctrl+alt+f "));
+        assert!(lines[2].text.ends_with(". search"));
+        assert!(lines[3].text.contains("test"));
         let mut out = Vec::new();
         paint_overlay(
             &mut out,
@@ -453,6 +489,40 @@ mod tests {
         assert!(rendered.contains("\x1b[36malt+f1 \x1b[90m"));
         assert!(rendered.contains("\x1b[0m help"));
         assert!(!rendered.contains("test\x1b[31m"));
+    }
+
+    #[test]
+    fn help_does_not_advertise_search_when_its_chord_is_taken() {
+        let cfg = Config::parse("[apps.other]\nbind='ctrl+alt+f'\ncmd=['other']").unwrap();
+        let lines = help_lines(&cfg);
+        assert!(!lines.iter().any(|line| line.text.ends_with(". search")));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.text.starts_with("ctrl+alt+f ") && line.text.ends_with(". other"))
+        );
+    }
+
+    #[test]
+    fn search_uses_notification_chrome() {
+        let mut out = Vec::new();
+        let height = paint_search(
+            &mut out,
+            Area {
+                x: 0,
+                y: 0,
+                w: 60,
+                h: 10,
+            },
+            "needle",
+            Some((1, 2)),
+        );
+        assert_eq!(height, 4);
+        let rendered = String::from_utf8(out).unwrap();
+        assert!(rendered.contains('╭'));
+        assert!(rendered.contains("\x1b[39mFind\x1b[90m · 1/2"));
+        assert!(rendered.contains("\x1b[39mneedle"));
+        assert!(!rendered.contains("Query:"));
     }
 
     #[test]

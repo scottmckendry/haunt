@@ -156,6 +156,8 @@ fn outer_terminal_identity() -> &'static str {
 
 pub struct Pane {
     pub id: u64,
+    // Search tracks grid positions; drop it before the terminal.
+    search: Option<libghostty_vt::search::Search<'static, 'static>>,
     term: Terminal<'static, 'static>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Box<dyn MasterPty + Send>,
@@ -371,6 +373,7 @@ impl Pane {
                 mouse_down: false,
                 selection: None,
                 force_full: true,
+                search: None,
                 focus_events: false,
                 focus_events_pending: false,
                 dirty: true,
@@ -474,7 +477,14 @@ impl Pane {
         scrollable: bool,
         graphics: &mut Graphics,
     ) -> Result<()> {
-        self.sync_selection()?;
+        if let Some(search) = &mut self.search {
+            let snapshot = search.snapshot(&mut self.term)?;
+            snapshot
+                .terminal()
+                .set_selection(snapshot.selected_match()?.as_ref())?;
+        } else {
+            self.sync_selection()?;
+        }
         let snapshot = self.render_state.update(&self.term)?;
 
         // Forward image data and placements first: the painter needs the
@@ -620,6 +630,34 @@ impl Pane {
             return self.send(&buf);
         }
         self.scroll(delta)
+    }
+
+    pub fn find(&mut self, query: &str, newer: bool) -> Result<(usize, usize)> {
+        if query.is_empty() {
+            return Ok((0, 0));
+        }
+        if self.search.is_none() {
+            self.search = Some(libghostty_vt::search::Search::new(&mut self.term)?);
+        }
+        let search = self.search.as_mut().unwrap();
+        search.set_needle(&mut self.term, query.as_bytes())?;
+        if newer {
+            search.select_prev(&mut self.term)?;
+        } else {
+            search.select_next(&mut self.term)?;
+        }
+        self.dirty = true;
+        Ok((
+            search.selected_index()?.map_or(0, |i| i + 1),
+            search.total_matches()?,
+        ))
+    }
+
+    pub fn clear_find(&mut self) -> Result<()> {
+        self.search = None;
+        self.term.set_selection(None)?;
+        self.force_repaint();
+        Ok(())
     }
 
     /// Scroll the viewport by `delta` rows (negative is up).
@@ -1330,6 +1368,44 @@ mod tests {
         pane.scroll_to_live();
         assert_eq!(pane.term().scrollbar().unwrap().offset, bottom.offset);
 
+        pane.shutdown();
+    }
+
+    #[test]
+    fn find_walks_scrollback_in_both_directions() {
+        let (mut pane, _reader) = Pane::spawn(
+            2,
+            &["/bin/sh".to_string()],
+            None,
+            PaneDims {
+                cols: 20,
+                rows: 5,
+                cell_w: 8,
+                cell_h: 16,
+            },
+            None,
+        )
+        .unwrap();
+        for row in 0..40 {
+            pane.feed(if row == 3 || row == 20 {
+                b"needle\r\n"
+            } else {
+                b"filler\r\n"
+            })
+            .unwrap();
+        }
+        let offset = |p: &Pane| p.term().scrollbar().unwrap().offset;
+        let live = offset(&pane);
+        assert_eq!(pane.find("NEEDLE", false).unwrap(), (1, 2));
+        let recent = offset(&pane);
+        assert!(recent < live);
+        assert_eq!(pane.find("NEEDLE", false).unwrap(), (2, 2));
+        assert!(offset(&pane) < recent);
+        assert_eq!(pane.find("NEEDLE", true).unwrap(), (1, 2));
+        assert_eq!(pane.find("absent", false).unwrap(), (0, 0));
+        let last_offset = offset(&pane);
+        pane.clear_find().unwrap();
+        assert_eq!(offset(&pane), last_offset);
         pane.shutdown();
     }
 

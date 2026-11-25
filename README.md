@@ -29,6 +29,8 @@ Press a binding to start and show its app; press it again to hide it. Only one a
 
 A half-size app appears to the right of the main pane; a full-size app covers it. Drag the separator between them to resize the split. Click a pane to focus it.
 
+Press `ctrl+alt+f` to search the focused pane’s screen and scrollback. Type or paste a query, then press Enter to jump to a match. Enter moves toward older matches; Shift+Enter moves toward newer matches. Esc closes search and leaves the pane at its current position. Search is literal and ignores case for ASCII letters. If you’ve assigned `ctrl+alt+f` to an app or another Haunt action, that binding takes precedence.
+
 Press `ctrl+shift+h` to show your configured apps and bindings. Press `ctrl+shift+r` to reload the configuration. Help and other notifications stack and disappear after five seconds; press Esc to dismiss them early.
 
 <table align="center">
