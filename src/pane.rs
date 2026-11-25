@@ -111,6 +111,9 @@ struct SelectionState {
     anchor: TrackedGridRef,
     focus: TrackedGridRef,
     kind: SelectKind,
+    /// The cell pressed on. Dragging must leave it before a cell selection
+    /// exists, so a jiggle inside one cell never copies anything.
+    anchor_cell: (u16, u16),
     dragging: bool,
     pointer: (u16, u16),
 }
@@ -662,6 +665,7 @@ impl Pane {
             anchor,
             focus,
             kind,
+            anchor_cell: (x, y),
             dragging: false,
             pointer: (x, y),
         });
@@ -677,7 +681,7 @@ impl Pane {
         }
         if let Some(selection) = self.selection.as_mut() {
             selection.pointer = (x, y);
-            selection.dragging = true;
+            selection.dragging |= (x, y) != selection.anchor_cell;
             let point = Point::Viewport(Coordinate { x, y: y as u32 });
             selection.focus.set(&mut self.term, point)?;
         }
@@ -774,6 +778,9 @@ impl Pane {
         };
 
         let selection = match state.kind {
+            // Like Ghostty, a press alone selects nothing; the selection
+            // starts once the drag leaves the pressed cell.
+            SelectKind::Cell if !state.dragging => return Ok(None),
             SelectKind::Cell => Selection::new(anchor, focus, false),
             SelectKind::Word => {
                 let start = self
@@ -1074,6 +1081,11 @@ mod tests {
 
         // A click without a drag clears instead of copying one cell.
         pane.selection_start(0, 0, SelectKind::Cell).unwrap();
+        assert_eq!(pane.selection_finish().unwrap(), None);
+
+        // Neither does a drag that never leaves the pressed cell.
+        pane.selection_start(0, 0, SelectKind::Cell).unwrap();
+        pane.selection_drag(0, 0).unwrap();
         assert_eq!(pane.selection_finish().unwrap(), None);
 
         pane.selection_start(0, 0, SelectKind::Cell).unwrap();

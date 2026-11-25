@@ -839,9 +839,7 @@ impl App {
     }
 
     fn copy_selection(&mut self, text: &[u8]) {
-        self.pending_writes.extend_from_slice(b"\x1b]52;c;");
-        base64::encode_into(text, &mut self.pending_writes);
-        self.pending_writes.push(0x07);
+        copy_sequence(text, COPY_TARGET, &mut self.pending_writes);
     }
 
     /// Timed work for notifications and selection autoscroll.
@@ -1178,6 +1176,20 @@ fn local_cell(area: Area, x: u16, y: u16) -> (u16, u16) {
     (clamp(x, area.x, area.w), clamp(y, area.y, area.h))
 }
 
+/// Copy-on-select writes the system clipboard, so the copied text comes back
+/// with the outer terminal's paste. Only deliberate gestures reach this: a
+/// plain click selects nothing, so browsing never clobbers the clipboard.
+const COPY_TARGET: u8 = b'c';
+
+/// Append an OSC 52 copy of `text` to `target`.
+fn copy_sequence(text: &[u8], target: u8, out: &mut Vec<u8>) {
+    out.extend_from_slice(b"\x1b]52;");
+    out.push(target);
+    out.push(b';');
+    base64::encode_into(text, out);
+    out.push(0x07);
+}
+
 fn full_area(size: Size) -> Area {
     Area {
         x: 0,
@@ -1410,6 +1422,13 @@ mod tests {
             reload_mapping(&old, &removed, &[false, true]).unwrap(),
             vec![Some(1)]
         );
+    }
+
+    #[test]
+    fn copy_on_select_writes_the_system_clipboard() {
+        let mut out = Vec::new();
+        copy_sequence(b"hi", COPY_TARGET, &mut out);
+        assert_eq!(out, b"\x1b]52;c;aGk=\x07");
     }
 
     fn size(cols: u16, rows: u16) -> Size {
